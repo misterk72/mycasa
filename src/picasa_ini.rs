@@ -169,4 +169,45 @@ faces=rect64(470713809bf5578a),e251f092e07b1008
 
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn reads_multiple_faces_and_keeps_unknown_contacts() {
+        let root = std::env::temp_dir().join(format!(
+            "mycasa-picasa-ini-multiple-faces-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let photo_path = root.join("Photo Avec Accent é.JPG");
+        std::fs::write(
+            root.join(".picasa.ini"),
+            r#"
+[Contacts2]
+known=Known Person;;
+
+[Photo Avec Accent é.JPG]
+faces=rect64(1111222233334444),known;rect64(aaaabbbbccccdddd),missing
+"#,
+        )
+        .unwrap();
+
+        let entry = read_entry_for_photo(&photo_path).unwrap();
+
+        assert_eq!(
+            entry.faces,
+            vec![
+                PicasaFace {
+                    rect64: "1111222233334444".to_owned(),
+                    contact_id: "known".to_owned(),
+                    name: Some("Known Person".to_owned()),
+                },
+                PicasaFace {
+                    rect64: "aaaabbbbccccdddd".to_owned(),
+                    contact_id: "missing".to_owned(),
+                    name: None,
+                }
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

@@ -1,5 +1,7 @@
 # Compatibilite Picasa
 
+Les prochains developpements lies a la compatibilite Picasa doivent suivre la regle TDD de `docs/development.md`.
+
 ## Decision
 MyCasa vise une compatibilite pragmatique avec Picasa via les fichiers sidecar `.picasa.ini`, pas via la base interne binaire de Picasa.
 
@@ -45,6 +47,7 @@ Decision actuelle : importer automatiquement les formats lisibles et stables (`w
 - Import `.picasa.ini` pendant l'indexation : captions, keywords, favoris, filters et visages.
 - Table `photo_faces` : stocke `rect64`, `contact_id`, `contact_name` pour chaque visage importe.
 - Le viewer affiche le nombre de visages Picasa associes a la photo.
+- Tests unitaires existants : parsing `.picasa.ini`, conversion de chemins Wine, migrations SQLite, upsert photo/faces, extensions image supportees.
 
 ## Limites Assumee
 - Pas de compatibilite binaire avec la base Picasa (`.pmp/.db`).

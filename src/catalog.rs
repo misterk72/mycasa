@@ -281,3 +281,144 @@ impl Catalog {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::picasa_ini::{PicasaFace, PicasaIniEntry};
+
+    #[test]
+    fn migrates_existing_catalog_without_losing_photos() {
+        let path = test_db_path("migration");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE photos (
+                        id INTEGER PRIMARY KEY,
+                        path TEXT NOT NULL UNIQUE,
+                        file_name TEXT NOT NULL,
+                        parent_path TEXT NOT NULL,
+                        file_size INTEGER,
+                        modified_at INTEGER,
+                        imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        width INTEGER,
+                        height INTEGER,
+                        captured_at TEXT
+                    );
+                    INSERT INTO photos (path, file_name, parent_path)
+                    VALUES ('/tmp/photo.jpg', 'photo.jpg', '/tmp');
+                    ",
+                )
+                .unwrap();
+        }
+
+        let catalog = Catalog::open(path.clone()).unwrap();
+        let photos = catalog.load_recent_photos(10).unwrap();
+
+        assert_eq!(photos.len(), 1);
+        assert_eq!(photos[0].path, PathBuf::from("/tmp/photo.jpg"));
+        assert!(!photos[0].picasa_starred);
+        assert_eq!(photos[0].picasa_face_count, 0);
+        assert!(has_column(&catalog.connection, "photos", "picasa_caption"));
+        assert!(has_column(&catalog.connection, "photos", "picasa_filters"));
+        assert!(has_table(&catalog.connection, "photo_faces"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn upsert_replaces_photo_metadata_and_faces() {
+        let path = test_db_path("upsert");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        let photo_path = PathBuf::from("/photos/IMG_0001.JPG");
+
+        let mut indexed = crate::indexer::IndexedPhoto::for_test(photo_path.clone());
+        indexed.picasa = Some(PicasaIniEntry {
+            caption: Some("Initial caption".to_owned()),
+            keywords: Some("one,two".to_owned()),
+            starred: true,
+            filters: Some("crop64=1,aaaa;".to_owned()),
+            faces: vec![PicasaFace {
+                rect64: "1111222233334444".to_owned(),
+                contact_id: "contact-a".to_owned(),
+                name: Some("Alice".to_owned()),
+            }],
+        });
+        catalog.upsert_photo(&indexed).unwrap();
+
+        indexed.width = Some(1024);
+        indexed.height = Some(768);
+        indexed.picasa = Some(PicasaIniEntry {
+            caption: Some("Updated caption".to_owned()),
+            keywords: Some("three".to_owned()),
+            starred: false,
+            filters: None,
+            faces: vec![
+                PicasaFace {
+                    rect64: "aaaaaaaaaaaaaaaa".to_owned(),
+                    contact_id: "contact-b".to_owned(),
+                    name: Some("Bob".to_owned()),
+                },
+                PicasaFace {
+                    rect64: "bbbbbbbbbbbbbbbb".to_owned(),
+                    contact_id: "contact-c".to_owned(),
+                    name: None,
+                },
+            ],
+        });
+        catalog.upsert_photo(&indexed).unwrap();
+
+        let photos = catalog.search_photos("Updated", 10).unwrap();
+        assert_eq!(photos.len(), 1);
+        assert_eq!(photos[0].path, photo_path);
+        assert_eq!(photos[0].width, Some(1024));
+        assert_eq!(photos[0].height, Some(768));
+        assert_eq!(photos[0].picasa_caption.as_deref(), Some("Updated caption"));
+        assert!(!photos[0].picasa_starred);
+        assert_eq!(photos[0].picasa_face_count, 2);
+
+        let photo_count: i64 = catalog
+            .connection
+            .query_row("SELECT COUNT(*) FROM photos", [], |row| row.get(0))
+            .unwrap();
+        let face_count: i64 = catalog
+            .connection
+            .query_row("SELECT COUNT(*) FROM photo_faces", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(photo_count, 1);
+        assert_eq!(face_count, 2);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn test_db_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "mycasa-catalog-{name}-{}-{}.sqlite3",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ))
+    }
+
+    fn has_column(connection: &Connection, table: &str, column: &str) -> bool {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .any(|name| name.unwrap() == column)
+    }
+
+    fn has_table(connection: &Connection, table: &str) -> bool {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            == 1
+    }
+}

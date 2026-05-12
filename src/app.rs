@@ -179,8 +179,13 @@ impl MyCasaApp {
         if self.folders.is_empty() {
             ui.label("Aucun dossier indexe");
         } else {
-            for folder in &self.folders {
-                ui.label(folder.display().to_string());
+            for folder in self.folders.clone() {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Scanner").clicked() {
+                        self.indexer.scan_folder(folder.clone());
+                    }
+                    ui.label(folder.display().to_string());
+                });
             }
         }
 

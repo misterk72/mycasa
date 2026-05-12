@@ -86,6 +86,24 @@ impl Indexer {
 }
 
 impl IndexedPhoto {
+    #[cfg(test)]
+    pub fn for_test(path: PathBuf) -> Self {
+        Self {
+            file_name: path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .unwrap_or("photo")
+                .to_owned(),
+            parent_path: path.parent().unwrap_or_else(|| Path::new("")).to_path_buf(),
+            path,
+            file_size: Some(42),
+            modified_at: Some(1_700_000_000),
+            width: Some(800),
+            height: Some(600),
+            picasa: None,
+        }
+    }
+
     fn from_path(path: &Path) -> Result<Self, String> {
         let metadata =
             std::fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -125,4 +143,18 @@ fn is_supported_image(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_supported_image_extensions_case_insensitively() {
+        assert!(is_supported_image(Path::new("photo.JPG")));
+        assert!(is_supported_image(Path::new("scan.tiff")));
+        assert!(is_supported_image(Path::new("web.webp")));
+        assert!(!is_supported_image(Path::new("notes.txt")));
+        assert!(!is_supported_image(Path::new("no-extension")));
+    }
 }
