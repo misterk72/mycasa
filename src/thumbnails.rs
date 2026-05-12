@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::mpsc::{self, Receiver, Sender},
     thread,
 };
@@ -7,6 +7,8 @@ use std::{
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
 use crate::catalog::Photo;
+
+const MAX_ACTIVE_THUMBNAIL_LOADS: usize = 4;
 
 pub enum ThumbnailState<'a> {
     Pending,
@@ -21,6 +23,8 @@ enum ThumbnailEntry {
 
 pub struct ThumbnailCache {
     entries: HashMap<i64, ThumbnailEntry>,
+    pending: VecDeque<Photo>,
+    active_loads: usize,
     sender: Sender<ThumbnailResult>,
     receiver: Receiver<ThumbnailResult>,
 }
@@ -35,6 +39,8 @@ impl ThumbnailCache {
         let (sender, receiver) = mpsc::channel();
         Self {
             entries: HashMap::new(),
+            pending: VecDeque::new(),
+            active_loads: 0,
             sender,
             receiver,
         }
@@ -49,7 +55,8 @@ impl ThumbnailCache {
 
         if !self.entries.contains_key(&photo.id) {
             self.entries.insert(photo.id, ThumbnailEntry::Loading);
-            self.spawn_load(photo.clone(), ctx.clone());
+            self.pending.push_back(photo.clone());
+            self.start_pending_loads(ctx);
         }
 
         match self.entries.get(&photo.id) {
@@ -62,12 +69,25 @@ impl ThumbnailCache {
 
     fn poll_completed(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.receiver.try_recv() {
+            self.active_loads = self.active_loads.saturating_sub(1);
             let entry = result.image.map_or(ThumbnailEntry::Failed, |image| {
                 let texture_name = format!("photo-thumbnail-{}", result.id);
                 ThumbnailEntry::Ready(ctx.load_texture(texture_name, image, TextureOptions::LINEAR))
             });
             self.entries.insert(result.id, entry);
             ctx.request_repaint();
+        }
+
+        self.start_pending_loads(ctx);
+    }
+
+    fn start_pending_loads(&mut self, ctx: &egui::Context) {
+        while self.active_loads < MAX_ACTIVE_THUMBNAIL_LOADS {
+            let Some(photo) = self.pending.pop_front() else {
+                break;
+            };
+            self.active_loads += 1;
+            self.spawn_load(photo, ctx.clone());
         }
     }
 
