@@ -1,14 +1,18 @@
 use std::{
     collections::{HashMap, VecDeque},
+    path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
     thread,
 };
 
+use directories::ProjectDirs;
 use egui::{ColorImage, TextureHandle, TextureOptions};
+use image::ImageFormat;
 
 use crate::catalog::Photo;
 
-const MAX_ACTIVE_THUMBNAIL_LOADS: usize = 4;
+const MAX_ACTIVE_THUMBNAIL_LOADS: usize = 6;
+const THUMBNAIL_EDGE: u32 = 256;
 
 pub enum ThumbnailState<'a> {
     Pending,
@@ -25,6 +29,7 @@ pub struct ThumbnailCache {
     entries: HashMap<i64, ThumbnailEntry>,
     pending: VecDeque<Photo>,
     active_loads: usize,
+    cache_dir: Option<PathBuf>,
     sender: Sender<ThumbnailResult>,
     receiver: Receiver<ThumbnailResult>,
 }
@@ -41,6 +46,7 @@ impl ThumbnailCache {
             entries: HashMap::new(),
             pending: VecDeque::new(),
             active_loads: 0,
+            cache_dir: thumbnail_cache_dir(),
             sender,
             receiver,
         }
@@ -93,8 +99,9 @@ impl ThumbnailCache {
 
     fn spawn_load(&self, photo: Photo, ctx: egui::Context) {
         let sender = self.sender.clone();
+        let cache_dir = self.cache_dir.clone();
         thread::spawn(move || {
-            let image = load_thumbnail_image(&photo);
+            let image = load_thumbnail_image(&photo, cache_dir);
             let _ = sender.send(ThumbnailResult {
                 id: photo.id,
                 image,
@@ -104,12 +111,56 @@ impl ThumbnailCache {
     }
 }
 
-fn load_thumbnail_image(photo: &Photo) -> Option<ColorImage> {
+fn load_thumbnail_image(photo: &Photo, cache_dir: Option<PathBuf>) -> Option<ColorImage> {
+    let cache_path = cache_dir
+        .as_ref()
+        .map(|cache_dir| cache_dir.join(cache_file_name(photo)));
+
+    if let Some(cache_path) = &cache_path {
+        if cache_path.exists() {
+            if let Some(image) = decode_color_image(cache_path) {
+                return Some(image);
+            }
+        }
+    }
+
     let image = image::open(&photo.path)
         .ok()?
-        .thumbnail(256, 256)
-        .to_rgba8();
+        .thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE);
+
+    if let Some(cache_path) = &cache_path {
+        if let Some(parent) = cache_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = image.save_with_format(cache_path, ImageFormat::Png);
+    }
+
+    Some(dynamic_to_color_image(image))
+}
+
+fn decode_color_image(path: &PathBuf) -> Option<ColorImage> {
+    image::open(path).ok().map(dynamic_to_color_image)
+}
+
+fn dynamic_to_color_image(image: image::DynamicImage) -> ColorImage {
+    let image = image.to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.into_raw();
-    Some(ColorImage::from_rgba_unmultiplied(size, &pixels))
+    ColorImage::from_rgba_unmultiplied(size, &pixels)
+}
+
+fn cache_file_name(photo: &Photo) -> String {
+    format!(
+        "{}-{}-{}.png",
+        photo.id,
+        photo.modified_at.unwrap_or_default(),
+        photo.file_size.unwrap_or_default()
+    )
+}
+
+fn thumbnail_cache_dir() -> Option<PathBuf> {
+    let project_dirs = ProjectDirs::from("org", "MyCasa", "MyCasa")?;
+    let cache_dir = project_dirs.cache_dir().join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    Some(cache_dir)
 }

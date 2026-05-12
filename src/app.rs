@@ -152,6 +152,18 @@ impl MyCasaApp {
             }
         }
 
+        if ui.button("Charger dossiers Picasa").clicked() {
+            let picasa_folders = crate::picasa_db::load_watched_folders();
+            let mut added = 0;
+            for folder in picasa_folders {
+                if !self.folders.iter().any(|existing| existing == &folder) {
+                    self.folders.push(folder);
+                    added += 1;
+                }
+            }
+            self.status = format!("{added} dossier(s) surveille(s) Picasa charges");
+        }
+
         if ui.button("Scanner le dossier courant").clicked() {
             match std::env::current_dir() {
                 Ok(path) => {

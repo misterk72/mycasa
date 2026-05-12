@@ -66,6 +66,18 @@ impl ViewerState {
                 if let Some(captured_at) = &photo.captured_at {
                     ui.label(captured_at);
                 }
+                if photo.picasa_starred {
+                    ui.label("Picasa: favori");
+                }
+                if photo.picasa_face_count > 0 {
+                    ui.label(format!("Visages Picasa: {}", photo.picasa_face_count));
+                }
+                if let Some(caption) = &photo.picasa_caption {
+                    ui.label(format!("Legende Picasa: {caption}"));
+                }
+                if let Some(keywords) = &photo.picasa_keywords {
+                    ui.label(format!("Mots-cles Picasa: {keywords}"));
+                }
             });
 
         if !open {

@@ -7,6 +7,8 @@ use std::{
 
 use walkdir::WalkDir;
 
+use crate::picasa_ini::PicasaIniEntry;
+
 #[derive(Debug)]
 pub enum IndexJob {
     Started(PathBuf),
@@ -27,6 +29,7 @@ pub struct IndexedPhoto {
     pub modified_at: Option<i64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub picasa: Option<PicasaIniEntry>,
 }
 
 pub struct Indexer {
@@ -107,6 +110,7 @@ impl IndexedPhoto {
                 .map(|duration| duration.as_secs() as i64),
             width,
             height,
+            picasa: crate::picasa_ini::read_entry_for_photo(path),
         })
     }
 }

@@ -9,9 +9,15 @@ use crate::indexer::IndexedPhoto;
 pub struct Photo {
     pub id: i64,
     pub path: PathBuf,
+    pub file_size: Option<u64>,
+    pub modified_at: Option<i64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub captured_at: Option<String>,
+    pub picasa_caption: Option<String>,
+    pub picasa_keywords: Option<String>,
+    pub picasa_starred: bool,
+    pub picasa_face_count: usize,
 }
 
 pub struct Catalog {
@@ -57,16 +63,21 @@ impl Catalog {
         let pattern = format!("%{}%", search.trim());
         let mut statement = if search.trim().is_empty() {
             self.connection.prepare(
-                "SELECT id, path, width, height, captured_at
+                "SELECT id, path, file_size, modified_at, width, height, captured_at,
+                        picasa_caption, picasa_keywords, picasa_starred,
+                        (SELECT COUNT(*) FROM photo_faces WHERE photo_faces.photo_id = photos.id)
                  FROM photos
                  ORDER BY imported_at DESC, id DESC
                  LIMIT ?1",
             )?
         } else {
             self.connection.prepare(
-                "SELECT id, path, width, height, captured_at
+                "SELECT id, path, file_size, modified_at, width, height, captured_at,
+                        picasa_caption, picasa_keywords, picasa_starred,
+                        (SELECT COUNT(*) FROM photo_faces WHERE photo_faces.photo_id = photos.id)
                  FROM photos
                  WHERE file_name LIKE ?2 OR parent_path LIKE ?2 OR path LIKE ?2
+                    OR picasa_caption LIKE ?2 OR picasa_keywords LIKE ?2
                  ORDER BY imported_at DESC, id DESC
                  LIMIT ?1",
             )?
@@ -81,17 +92,25 @@ impl Catalog {
         let photos = statement
             .query_map(params, |row| {
                 let width = row
-                    .get::<_, Option<i64>>(2)?
+                    .get::<_, Option<i64>>(4)?
                     .and_then(|value| value.try_into().ok());
                 let height = row
-                    .get::<_, Option<i64>>(3)?
+                    .get::<_, Option<i64>>(5)?
                     .and_then(|value| value.try_into().ok());
                 Ok(Photo {
                     id: row.get(0)?,
                     path: PathBuf::from(row.get::<_, String>(1)?),
+                    file_size: row
+                        .get::<_, Option<i64>>(2)?
+                        .and_then(|value| value.try_into().ok()),
+                    modified_at: row.get(3)?,
                     width,
                     height,
-                    captured_at: row.get(4)?,
+                    captured_at: row.get(6)?,
+                    picasa_caption: row.get(7)?,
+                    picasa_keywords: row.get(8)?,
+                    picasa_starred: row.get::<_, i64>(9)? != 0,
+                    picasa_face_count: row.get::<_, i64>(10)?.try_into().unwrap_or_default(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -103,16 +122,21 @@ impl Catalog {
         self.connection.execute(
             "
             INSERT INTO photos (
-                path, file_name, parent_path, file_size, modified_at, width, height
+                path, file_name, parent_path, file_size, modified_at, width, height,
+                picasa_caption, picasa_keywords, picasa_starred, picasa_filters
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(path) DO UPDATE SET
                 file_name = excluded.file_name,
                 parent_path = excluded.parent_path,
                 file_size = excluded.file_size,
                 modified_at = excluded.modified_at,
                 width = excluded.width,
-                height = excluded.height
+                height = excluded.height,
+                picasa_caption = excluded.picasa_caption,
+                picasa_keywords = excluded.picasa_keywords,
+                picasa_starred = excluded.picasa_starred,
+                picasa_filters = excluded.picasa_filters
             ",
             params![
                 photo.path.to_string_lossy(),
@@ -122,8 +146,45 @@ impl Catalog {
                 photo.modified_at,
                 photo.width.map(|value| value as i64),
                 photo.height.map(|value| value as i64),
+                photo
+                    .picasa
+                    .as_ref()
+                    .and_then(|entry| entry.caption.as_deref()),
+                photo
+                    .picasa
+                    .as_ref()
+                    .and_then(|entry| entry.keywords.as_deref()),
+                photo
+                    .picasa
+                    .as_ref()
+                    .map(|entry| i64::from(entry.starred))
+                    .unwrap_or(0),
+                photo
+                    .picasa
+                    .as_ref()
+                    .and_then(|entry| entry.filters.as_deref()),
             ],
         )?;
+        let photo_id: i64 = self.connection.query_row(
+            "SELECT id FROM photos WHERE path = ?1",
+            params![photo.path.to_string_lossy()],
+            |row| row.get(0),
+        )?;
+        self.connection.execute(
+            "DELETE FROM photo_faces WHERE photo_id = ?1",
+            params![photo_id],
+        )?;
+        if let Some(picasa) = &photo.picasa {
+            for face in &picasa.faces {
+                self.connection.execute(
+                    "
+                    INSERT INTO photo_faces (photo_id, rect64, contact_id, contact_name)
+                    VALUES (?1, ?2, ?3, ?4)
+                    ",
+                    params![photo_id, face.rect64, face.contact_id, face.name],
+                )?;
+            }
+        }
 
         Ok(())
     }
@@ -176,8 +237,46 @@ impl Catalog {
                 photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
                 PRIMARY KEY (album_id, photo_id)
             );
+
+            CREATE TABLE IF NOT EXISTS photo_faces (
+                id INTEGER PRIMARY KEY,
+                photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                rect64 TEXT NOT NULL,
+                contact_id TEXT NOT NULL,
+                contact_name TEXT
+            );
             ",
         )?;
+
+        self.ensure_column("photos", "picasa_caption", "TEXT")?;
+        self.ensure_column("photos", "picasa_keywords", "TEXT")?;
+        self.ensure_column("photos", "picasa_starred", "INTEGER NOT NULL DEFAULT 0")?;
+        self.ensure_column("photos", "picasa_filters", "TEXT")?;
+
+        Ok(())
+    }
+
+    fn ensure_column(
+        &self,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<(), CatalogError> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("PRAGMA table_info({table})"))?;
+        let exists = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|existing| existing == column);
+
+        if !exists {
+            self.connection.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
 
         Ok(())
     }
