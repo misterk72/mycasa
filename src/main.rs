@@ -1,5 +1,6 @@
 mod app;
 mod catalog;
+mod folders;
 mod indexer;
 mod picasa_db;
 mod picasa_ini;

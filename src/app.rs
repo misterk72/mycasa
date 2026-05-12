@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use egui::{Align, Color32, Layout, RichText, ScrollArea, Sense, Stroke, Vec2};
 
 use crate::catalog::{Catalog, CatalogError, Photo};
+use crate::folders::add_folder_once;
 use crate::indexer::{IndexJob, Indexer};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
 use crate::viewer::ViewerState;
@@ -114,9 +115,7 @@ impl MyCasaApp {
                         photos_found,
                         folder.display()
                     );
-                    if !self.folders.iter().any(|existing| existing == &folder) {
-                        self.folders.push(folder);
-                    }
+                    add_folder_once(&mut self.folders, folder);
                     self.refresh_photos();
                 }
                 IndexJob::Failed(message) => {
@@ -141,9 +140,7 @@ impl MyCasaApp {
                 .pick_folder()
             {
                 Some(path) => {
-                    if !self.folders.iter().any(|existing| existing == &path) {
-                        self.folders.push(path.clone());
-                    }
+                    add_folder_once(&mut self.folders, path.clone());
                     self.indexer.scan_folder(path);
                 }
                 None => {
@@ -156,8 +153,7 @@ impl MyCasaApp {
             let picasa_folders = crate::picasa_db::load_watched_folders();
             let mut added = 0;
             for folder in picasa_folders {
-                if !self.folders.iter().any(|existing| existing == &folder) {
-                    self.folders.push(folder);
+                if add_folder_once(&mut self.folders, folder) {
                     added += 1;
                 }
             }
@@ -167,7 +163,7 @@ impl MyCasaApp {
         if ui.button("Scanner le dossier courant").clicked() {
             match std::env::current_dir() {
                 Ok(path) => {
-                    self.folders.push(path.clone());
+                    add_folder_once(&mut self.folders, path.clone());
                     self.indexer.scan_folder(path);
                 }
                 Err(error) => self.status = format!("Dossier courant introuvable: {error}"),
