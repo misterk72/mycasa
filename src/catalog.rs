@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
 use rusqlite::{Connection, params};
 
+use crate::indexer::IndexedPhoto;
+
 #[derive(Debug, Clone)]
 pub struct Photo {
     pub id: i64,
@@ -48,26 +50,100 @@ impl Catalog {
     }
 
     pub fn load_recent_photos(&self, limit: usize) -> Result<Vec<Photo>, CatalogError> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, path, width, height, captured_at
-             FROM photos
-             ORDER BY imported_at DESC, id DESC
-             LIMIT ?1",
-        )?;
+        self.search_photos("", limit)
+    }
+
+    pub fn search_photos(&self, search: &str, limit: usize) -> Result<Vec<Photo>, CatalogError> {
+        let pattern = format!("%{}%", search.trim());
+        let mut statement = if search.trim().is_empty() {
+            self.connection.prepare(
+                "SELECT id, path, width, height, captured_at
+                 FROM photos
+                 ORDER BY imported_at DESC, id DESC
+                 LIMIT ?1",
+            )?
+        } else {
+            self.connection.prepare(
+                "SELECT id, path, width, height, captured_at
+                 FROM photos
+                 WHERE file_name LIKE ?2 OR parent_path LIKE ?2 OR path LIKE ?2
+                 ORDER BY imported_at DESC, id DESC
+                 LIMIT ?1",
+            )?
+        };
+
+        let params: &[&dyn rusqlite::ToSql] = if search.trim().is_empty() {
+            &[&(limit as i64)]
+        } else {
+            &[&(limit as i64), &pattern]
+        };
 
         let photos = statement
-            .query_map(params![limit as i64], |row| {
+            .query_map(params, |row| {
+                let width = row
+                    .get::<_, Option<i64>>(2)?
+                    .and_then(|value| value.try_into().ok());
+                let height = row
+                    .get::<_, Option<i64>>(3)?
+                    .and_then(|value| value.try_into().ok());
                 Ok(Photo {
                     id: row.get(0)?,
                     path: PathBuf::from(row.get::<_, String>(1)?),
-                    width: row.get::<_, Option<u32>>(2)?,
-                    height: row.get::<_, Option<u32>>(3)?,
+                    width,
+                    height,
                     captured_at: row.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(photos)
+    }
+
+    pub fn upsert_photo(&self, photo: &IndexedPhoto) -> Result<(), CatalogError> {
+        self.connection.execute(
+            "
+            INSERT INTO photos (
+                path, file_name, parent_path, file_size, modified_at, width, height
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(path) DO UPDATE SET
+                file_name = excluded.file_name,
+                parent_path = excluded.parent_path,
+                file_size = excluded.file_size,
+                modified_at = excluded.modified_at,
+                width = excluded.width,
+                height = excluded.height
+            ",
+            params![
+                photo.path.to_string_lossy(),
+                photo.file_name,
+                photo.parent_path.to_string_lossy(),
+                photo.file_size.map(|value| value as i64),
+                photo.modified_at,
+                photo.width.map(|value| value as i64),
+                photo.height.map(|value| value as i64),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn load_folders(&self, limit: usize) -> Result<Vec<PathBuf>, CatalogError> {
+        let mut statement = self.connection.prepare(
+            "SELECT parent_path
+             FROM photos
+             GROUP BY parent_path
+             ORDER BY MAX(imported_at) DESC
+             LIMIT ?1",
+        )?;
+
+        let folders = statement
+            .query_map(params![limit as i64], |row| {
+                Ok(PathBuf::from(row.get::<_, String>(0)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(folders)
     }
 
     fn migrate(&self) -> Result<(), CatalogError> {

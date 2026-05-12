@@ -2,6 +2,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
+    time::UNIX_EPOCH,
 };
 
 use walkdir::WalkDir;
@@ -9,12 +10,23 @@ use walkdir::WalkDir;
 #[derive(Debug)]
 pub enum IndexJob {
     Started(PathBuf),
-    FoundPhoto(PathBuf),
+    FoundPhoto(IndexedPhoto),
     Finished {
         folder: PathBuf,
         photos_found: usize,
     },
     Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexedPhoto {
+    pub path: PathBuf,
+    pub file_name: String,
+    pub parent_path: PathBuf,
+    pub file_size: Option<u64>,
+    pub modified_at: Option<i64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 pub struct Indexer {
@@ -41,8 +53,15 @@ impl Indexer {
                     Ok(entry)
                         if entry.file_type().is_file() && is_supported_image(entry.path()) =>
                     {
-                        photos_found += 1;
-                        let _ = sender.send(IndexJob::FoundPhoto(entry.path().to_path_buf()));
+                        match IndexedPhoto::from_path(entry.path()) {
+                            Ok(photo) => {
+                                photos_found += 1;
+                                let _ = sender.send(IndexJob::FoundPhoto(photo));
+                            }
+                            Err(error) => {
+                                let _ = sender.send(IndexJob::Failed(error));
+                            }
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -60,6 +79,35 @@ impl Indexer {
 
     pub fn try_recv(&self) -> Option<IndexJob> {
         self.receiver.try_recv().ok()
+    }
+}
+
+impl IndexedPhoto {
+    fn from_path(path: &Path) -> Result<Self, String> {
+        let metadata =
+            std::fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let (width, height) = match image::image_dimensions(path) {
+            Ok((width, height)) => (Some(width), Some(height)),
+            Err(_) => (None, None),
+        };
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            file_name: path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .unwrap_or("photo")
+                .to_owned(),
+            parent_path: path.parent().unwrap_or_else(|| Path::new("")).to_path_buf(),
+            file_size: Some(metadata.len()),
+            modified_at: metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs() as i64),
+            width,
+            height,
+        })
     }
 }
 

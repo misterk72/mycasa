@@ -9,6 +9,7 @@ use crate::viewer::ViewerState;
 
 const THUMBNAIL_SIZE: f32 = 144.0;
 const TILE_PADDING: f32 = 10.0;
+const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
@@ -21,6 +22,7 @@ pub struct MyCasaApp {
     selected_photo: Option<i64>,
     status: String,
     search: String,
+    imported_since_refresh: usize,
 }
 
 impl MyCasaApp {
@@ -28,6 +30,7 @@ impl MyCasaApp {
         let catalog = Catalog::open_default();
         let mut status = String::from("Catalogue pret");
         let mut photos = Vec::new();
+        let mut folders = Vec::new();
 
         if let Ok(catalog) = &catalog {
             match catalog.load_recent_photos(250) {
@@ -35,6 +38,9 @@ impl MyCasaApp {
                 Err(error) => {
                     status = format!("Catalogue ouvert, lecture photos impossible: {error}")
                 }
+            }
+            if let Ok(loaded_folders) = catalog.load_folders(50) {
+                folders = loaded_folders;
             }
         } else if let Err(error) = &catalog {
             status = format!("Catalogue indisponible: {error}");
@@ -46,7 +52,7 @@ impl MyCasaApp {
             thumbnails: ThumbnailCache::new(),
             viewer: ViewerState::default(),
             photos,
-            folders: Vec::new(),
+            folders,
             albums: vec![
                 "Toutes les photos".to_owned(),
                 "Favoris".to_owned(),
@@ -55,12 +61,13 @@ impl MyCasaApp {
             selected_photo: None,
             status,
             search: String::new(),
+            imported_since_refresh: 0,
         }
     }
 
     fn refresh_photos(&mut self) {
         if let Ok(catalog) = &self.catalog {
-            match catalog.load_recent_photos(250) {
+            match catalog.search_photos(&self.search, 500) {
                 Ok(photos) => {
                     self.photos = photos;
                     self.status = format!("{} photo(s) dans le catalogue", self.photos.len());
@@ -71,13 +78,32 @@ impl MyCasaApp {
     }
 
     fn poll_background_work(&mut self) {
-        while let Some(event) = self.indexer.try_recv() {
+        let mut processed = 0;
+        while processed < MAX_INDEX_EVENTS_PER_FRAME {
+            let Some(event) = self.indexer.try_recv() else {
+                break;
+            };
+            processed += 1;
             match event {
                 IndexJob::Started(path) => {
+                    self.imported_since_refresh = 0;
                     self.status = format!("Indexation demarree: {}", path.display());
                 }
-                IndexJob::FoundPhoto(path) => {
-                    self.status = format!("Photo detectee: {}", path.display());
+                IndexJob::FoundPhoto(photo) => {
+                    if let Ok(catalog) = &self.catalog {
+                        match catalog.upsert_photo(&photo) {
+                            Ok(()) => {
+                                self.imported_since_refresh += 1;
+                                if self.imported_since_refresh % 25 == 0 {
+                                    self.refresh_photos();
+                                }
+                                self.status = format!("Photo indexee: {}", photo.path.display());
+                            }
+                            Err(error) => {
+                                self.status = format!("Ecriture catalogue impossible: {error}");
+                            }
+                        }
+                    }
                 }
                 IndexJob::Finished {
                     folder,
@@ -88,12 +114,20 @@ impl MyCasaApp {
                         photos_found,
                         folder.display()
                     );
+                    if !self.folders.iter().any(|existing| existing == &folder) {
+                        self.folders.push(folder);
+                    }
                     self.refresh_photos();
                 }
                 IndexJob::Failed(message) => {
                     self.status = format!("Indexation impossible: {message}");
                 }
             }
+        }
+
+        if processed == MAX_INDEX_EVENTS_PER_FRAME {
+            self.status =
+                format!("Indexation en cours: traitement par lots de {MAX_INDEX_EVENTS_PER_FRAME}");
         }
     }
 
@@ -102,7 +136,20 @@ impl MyCasaApp {
         ui.add_space(8.0);
 
         if ui.button("Ajouter un dossier").clicked() {
-            self.status = "Selection native de dossier a connecter a l'etape suivante".to_owned();
+            match rfd::FileDialog::new()
+                .set_title("Ajouter un dossier photo")
+                .pick_folder()
+            {
+                Some(path) => {
+                    if !self.folders.iter().any(|existing| existing == &path) {
+                        self.folders.push(path.clone());
+                    }
+                    self.indexer.scan_folder(path);
+                }
+                None => {
+                    self.status = "Selection de dossier annulee".to_owned();
+                }
+            }
         }
 
         if ui.button("Scanner le dossier courant").clicked() {
@@ -137,7 +184,7 @@ impl MyCasaApp {
             ui.label("Recherche");
             let response = ui.text_edit_singleline(&mut self.search);
             if response.changed() {
-                self.status = "Recherche locale UI prete, filtre catalogue a connecter".to_owned();
+                self.refresh_photos();
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -208,7 +255,7 @@ impl MyCasaApp {
             Vec2::splat(THUMBNAIL_SIZE),
         );
 
-        match self.thumbnails.state_for(photo) {
+        match self.thumbnails.state_for(ui.ctx(), photo) {
             ThumbnailState::Pending => {
                 ui.painter()
                     .rect_filled(thumb_rect, 4.0, Color32::from_rgb(24, 26, 31));
@@ -220,8 +267,21 @@ impl MyCasaApp {
                     Color32::from_gray(150),
                 );
             }
-            ThumbnailState::Ready(color) => {
-                ui.painter().rect_filled(thumb_rect, 4.0, color);
+            ThumbnailState::Ready(texture) => {
+                let image_size = texture.size_vec2();
+                let scale = (thumb_rect.width() / image_size.x)
+                    .min(thumb_rect.height() / image_size.y)
+                    .min(1.0);
+                let fitted_size = image_size * scale;
+                let image_rect = egui::Rect::from_center_size(thumb_rect.center(), fitted_size);
+                ui.painter()
+                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(20, 22, 26));
+                ui.painter().image(
+                    texture.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
             }
         }
 
