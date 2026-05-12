@@ -1,0 +1,15 @@
+[package]
+name = "mycasa"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+directories = "6"
+eframe = { version = "0.33", features = ["wgpu"] }
+egui = "0.33"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+thiserror = "2"
+walkdir = "2"
