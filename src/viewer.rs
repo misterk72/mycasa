@@ -8,6 +8,9 @@ use egui::{Color32, ColorImage, RichText, TextureHandle, TextureOptions, Vec2};
 use crate::catalog::Photo;
 use crate::thumbnails::load_cached_thumbnail_image;
 
+const VIEWER_MIN_SIZE: Vec2 = Vec2::new(760.0, 520.0);
+const VIEWER_MAX_SIZE: Vec2 = Vec2::new(1180.0, 840.0);
+
 #[derive(Clone, Copy)]
 pub enum NavigationDirection {
     Previous,
@@ -69,6 +72,8 @@ impl ViewerState {
         egui::Window::new("Viewer")
             .open(&mut open)
             .resizable(true)
+            .default_size(viewer_window_size(photo.width, photo.height))
+            .min_size(VIEWER_MIN_SIZE)
             .vscroll(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -218,6 +223,26 @@ impl ViewerState {
     }
 }
 
+pub fn viewer_window_size(width: Option<u32>, height: Option<u32>) -> Vec2 {
+    let Some(width) = width.filter(|value| *value > 0) else {
+        return Vec2::new(1060.0, 760.0);
+    };
+    let Some(height) = height.filter(|value| *value > 0) else {
+        return Vec2::new(1060.0, 760.0);
+    };
+
+    let aspect = width as f32 / height as f32;
+    let mut size = if aspect >= 1.0 {
+        Vec2::new(VIEWER_MAX_SIZE.x, VIEWER_MAX_SIZE.x / aspect + 120.0)
+    } else {
+        Vec2::new((VIEWER_MAX_SIZE.y - 120.0) * aspect, VIEWER_MAX_SIZE.y)
+    };
+
+    size.x = size.x.clamp(VIEWER_MIN_SIZE.x, VIEWER_MAX_SIZE.x);
+    size.y = size.y.clamp(VIEWER_MIN_SIZE.y, VIEWER_MAX_SIZE.y);
+    size
+}
+
 pub fn adjacent_photo_id(
     photos: &[Photo],
     current_id: i64,
@@ -247,6 +272,19 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn viewer_window_size_follows_image_orientation() {
+        let landscape = viewer_window_size(Some(4000), Some(3000));
+        let portrait = viewer_window_size(Some(2000), Some(3000));
+        let unknown = viewer_window_size(None, None);
+
+        assert!(landscape.x > landscape.y);
+        assert!(portrait.y > portrait.x);
+        assert_eq!(unknown, Vec2::new(1060.0, 760.0));
+        assert!(landscape.x <= VIEWER_MAX_SIZE.x);
+        assert!(portrait.y <= VIEWER_MAX_SIZE.y);
+    }
 
     #[test]
     fn finds_adjacent_photo_ids() {
