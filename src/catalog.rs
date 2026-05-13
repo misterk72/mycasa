@@ -193,6 +193,11 @@ impl Catalog {
                 contact_id TEXT NOT NULL,
                 contact_name TEXT
             );
+
+            CREATE INDEX IF NOT EXISTS idx_photos_imported_at ON photos(imported_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_photos_file_name ON photos(file_name);
+            CREATE INDEX IF NOT EXISTS idx_photos_parent_path ON photos(parent_path);
+            CREATE INDEX IF NOT EXISTS idx_photo_faces_photo_id ON photo_faces(photo_id);
             ",
         )?;
 
@@ -346,6 +351,10 @@ mod tests {
         assert!(has_column(&catalog.connection, "photos", "picasa_caption"));
         assert!(has_column(&catalog.connection, "photos", "picasa_filters"));
         assert!(has_table(&catalog.connection, "photo_faces"));
+        assert!(has_index(&catalog.connection, "idx_photos_imported_at"));
+        assert!(has_index(&catalog.connection, "idx_photos_file_name"));
+        assert!(has_index(&catalog.connection, "idx_photos_parent_path"));
+        assert!(has_index(&catalog.connection, "idx_photo_faces_photo_id"));
 
         let _ = std::fs::remove_file(path);
     }
@@ -456,6 +465,17 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
                 params![table],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            == 1
+    }
+
+    fn has_index(connection: &Connection, index: &str) -> bool {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                params!["index", index],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap()

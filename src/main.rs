@@ -1,5 +1,6 @@
 mod app;
 mod catalog;
+mod debounce;
 mod folders;
 mod grid;
 mod indexer;

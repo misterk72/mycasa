@@ -14,6 +14,7 @@ Valider rapidement que MyCasa peut afficher un dossier photo NAS avec une experi
 - `cache` : miniatures lues depuis le cache disque.
 - `gen` : miniatures generees depuis l'original.
 - `fail` : miniatures impossibles a charger.
+- `evict` : textures miniatures retirees de la memoire GPU.
 - `pending` : miniatures en attente de worker.
 - `active` : workers miniatures actifs.
 - `ready` : textures miniatures chargees en memoire.
@@ -40,3 +41,7 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - File evenements indexation bornee a 512 messages pour appliquer une pression retour au scan.
 - Scans du meme dossier dedupliques pendant qu'une indexation est deja active.
 - Chargement catalogue pagine par pas de 500 photos, plafonne a 5000 pour proteger la grille.
+- Cache memoire miniatures borne a 800 textures pretes, avec regeneration possible depuis le cache disque.
+- Demandes miniatures visibles prioritaires dans la file de chargement.
+- Index SQLite explicites sur chargement recent, recherche fichier/dossier et visages par photo.
+- Recherche debouncee a 250 ms pour eviter une requete catalogue a chaque frappe.

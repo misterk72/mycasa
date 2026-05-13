@@ -12,6 +12,7 @@ use image::ImageFormat;
 use crate::catalog::Photo;
 
 const MAX_ACTIVE_THUMBNAIL_LOADS: usize = 3;
+const MAX_READY_THUMBNAILS: usize = 800;
 const THUMBNAIL_EDGE: u32 = 256;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +20,7 @@ pub struct ThumbnailMetrics {
     pub cache_hits: usize,
     pub generated: usize,
     pub failed: usize,
+    pub evicted: usize,
     pub pending: usize,
     pub active_loads: usize,
     pub ready: usize,
@@ -38,6 +40,7 @@ enum ThumbnailEntry {
 
 pub struct ThumbnailCache {
     entries: HashMap<i64, ThumbnailEntry>,
+    ready_order: VecDeque<i64>,
     pending: VecDeque<Photo>,
     active_loads: usize,
     cache_dir: Option<PathBuf>,
@@ -64,6 +67,7 @@ impl ThumbnailCache {
         let (sender, receiver) = mpsc::channel();
         Self {
             entries: HashMap::new(),
+            ready_order: VecDeque::new(),
             pending: VecDeque::new(),
             active_loads: 0,
             cache_dir: thumbnail_cache_dir(),
@@ -91,7 +95,7 @@ impl ThumbnailCache {
 
         if !self.entries.contains_key(&photo.id) {
             self.entries.insert(photo.id, ThumbnailEntry::Loading);
-            self.pending.push_back(photo.clone());
+            self.queue_visible_request(photo.clone());
             self.start_pending_loads(ctx);
         }
 
@@ -114,11 +118,33 @@ impl ThumbnailCache {
                 let texture_name = format!("photo-thumbnail-{}", result.id);
                 ThumbnailEntry::Ready(ctx.load_texture(texture_name, image, TextureOptions::LINEAR))
             });
+            let is_ready = matches!(entry, ThumbnailEntry::Ready(_));
             self.entries.insert(result.id, entry);
+            if is_ready {
+                self.ready_order.push_back(result.id);
+                self.evict_old_ready_entries();
+            }
             ctx.request_repaint();
         }
 
         self.start_pending_loads(ctx);
+    }
+
+    fn queue_visible_request(&mut self, photo: Photo) {
+        self.pending.push_front(photo);
+    }
+
+    fn evict_old_ready_entries(&mut self) {
+        while self.ready_order.len() > MAX_READY_THUMBNAILS {
+            let Some(photo_id) = self.ready_order.pop_front() else {
+                break;
+            };
+
+            if matches!(self.entries.get(&photo_id), Some(ThumbnailEntry::Ready(_))) {
+                self.entries.remove(&photo_id);
+                self.metrics.evicted += 1;
+            }
+        }
     }
 
     fn start_pending_loads(&mut self, ctx: &egui::Context) {
@@ -273,6 +299,7 @@ mod tests {
             .push_back(photo_for_test(1, Some(100), Some(200)));
         cache.active_loads = 2;
         cache.metrics.cache_hits = 3;
+        cache.metrics.evicted = 4;
         cache.entries.insert(1, ThumbnailEntry::Failed);
 
         let metrics = cache.metrics();
@@ -280,7 +307,56 @@ mod tests {
         assert_eq!(metrics.pending, 1);
         assert_eq!(metrics.active_loads, 2);
         assert_eq!(metrics.cache_hits, 3);
+        assert_eq!(metrics.evicted, 4);
         assert_eq!(metrics.ready, 0);
+    }
+
+    #[test]
+    fn visible_requests_are_prioritized() {
+        let mut cache = ThumbnailCache::new();
+
+        cache.queue_visible_request(photo_for_test(1, Some(100), Some(200)));
+        cache.queue_visible_request(photo_for_test(2, Some(100), Some(200)));
+
+        assert_eq!(cache.pending.pop_front().map(|photo| photo.id), Some(2));
+        assert_eq!(cache.pending.pop_front().map(|photo| photo.id), Some(1));
+    }
+
+    #[test]
+    fn evicts_old_ready_entries_when_memory_cache_is_full() {
+        let mut cache = ThumbnailCache::new();
+        for id in 0..=MAX_READY_THUMBNAILS {
+            cache.entries.insert(id as i64, ThumbnailEntry::Failed);
+            cache.ready_order.push_back(id as i64);
+        }
+        cache.entries.insert(0, ThumbnailEntry::Failed);
+
+        cache.evict_old_ready_entries();
+
+        assert_eq!(cache.metrics.evicted, 0);
+        assert_eq!(cache.entries.len(), MAX_READY_THUMBNAILS + 1);
+
+        cache.entries.clear();
+        cache.ready_order.clear();
+        for id in 0..=MAX_READY_THUMBNAILS {
+            cache
+                .entries
+                .insert(id as i64, ThumbnailEntry::Ready(dummy_texture()));
+            cache.ready_order.push_back(id as i64);
+        }
+
+        cache.evict_old_ready_entries();
+
+        assert_eq!(cache.metrics.evicted, 1);
+        assert!(!cache.entries.contains_key(&0));
+        assert_eq!(
+            cache
+                .entries
+                .values()
+                .filter(|entry| matches!(entry, ThumbnailEntry::Ready(_)))
+                .count(),
+            MAX_READY_THUMBNAILS
+        );
     }
 
     #[test]
@@ -331,6 +407,15 @@ mod tests {
 
         assert!(image.is_none());
         assert_eq!(source, ThumbnailSource::Failed);
+    }
+
+    fn dummy_texture() -> TextureHandle {
+        let ctx = egui::Context::default();
+        ctx.load_texture(
+            "dummy-thumbnail",
+            ColorImage::from_rgba_unmultiplied([1, 1], &[255, 255, 255, 255]),
+            TextureOptions::LINEAR,
+        )
     }
 
     fn photo_for_test(id: i64, file_size: Option<u64>, modified_at: Option<i64>) -> Photo {

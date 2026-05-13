@@ -7,6 +7,7 @@ use std::{
 use egui::{Align, Color32, Layout, RichText, ScrollArea, Sense, Stroke, Vec2};
 
 use crate::catalog::{Catalog, CatalogError, Photo};
+use crate::debounce::Debouncer;
 use crate::folders::add_folder_once;
 use crate::grid::{columns_for_width, item_range_for_row, row_count};
 use crate::indexer::{IndexJob, IndexedPhoto, Indexer};
@@ -21,6 +22,7 @@ const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 34.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
@@ -34,6 +36,7 @@ pub struct MyCasaApp {
     selected_photo: Option<i64>,
     status: String,
     search: String,
+    search_debouncer: Debouncer,
     imported_since_refresh: usize,
     pending_catalog_writes: Vec<IndexedPhoto>,
     active_scan_folders: HashSet<PathBuf>,
@@ -79,6 +82,7 @@ impl MyCasaApp {
             selected_photo: None,
             status,
             search: String::new(),
+            search_debouncer: Debouncer::new(SEARCH_DEBOUNCE),
             imported_since_refresh: 0,
             pending_catalog_writes: Vec::new(),
             active_scan_folders: HashSet::new(),
@@ -281,7 +285,7 @@ impl MyCasaApp {
             ui.label("Recherche");
             let response = ui.text_edit_singleline(&mut self.search);
             if response.changed() {
-                self.refresh_photos();
+                self.search_debouncer.mark_changed(Instant::now());
             }
 
             if ui.button("Charger plus").clicked() {
@@ -476,6 +480,9 @@ impl eframe::App for MyCasaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_frame_metrics();
         self.poll_background_work();
+        if self.search_debouncer.should_run(Instant::now()) {
+            self.refresh_photos();
+        }
 
         egui::SidePanel::left("sidebar")
             .resizable(true)
@@ -488,10 +495,11 @@ impl eframe::App for MyCasaApp {
                 let metrics = self.thumbnails.metrics();
                 ui.separator();
                 ui.label(format!(
-                    "thumbs cache:{} gen:{} fail:{} pending:{} active:{} ready:{} scans:{} dbq:{} fps:{:.0}",
+                    "thumbs cache:{} gen:{} fail:{} evict:{} pending:{} active:{} ready:{} scans:{} dbq:{} fps:{:.0}",
                     metrics.cache_hits,
                     metrics.generated,
                     metrics.failed,
+                    metrics.evicted,
                     metrics.pending,
                     metrics.active_loads,
                     metrics.ready,
