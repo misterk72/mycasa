@@ -181,10 +181,8 @@ fn load_thumbnail_image(
         .map(|cache_dir| cache_dir.join(cache_file_name(photo)));
 
     if let Some(cache_path) = &cache_path {
-        if cache_path.exists() {
-            if let Some(image) = decode_color_image(cache_path) {
-                return (Some(image), ThumbnailSource::Cache);
-            }
+        if let Some(image) = load_cached_thumbnail_image_at(cache_path) {
+            return (Some(image), ThumbnailSource::Cache);
         }
     }
 
@@ -208,7 +206,16 @@ fn load_thumbnail_image(
     )
 }
 
-fn decode_color_image(path: &PathBuf) -> Option<ColorImage> {
+pub(crate) fn load_cached_thumbnail_image(photo: &Photo) -> Option<ColorImage> {
+    let cache_dir = thumbnail_cache_dir()?;
+    load_cached_thumbnail_image_at(&cache_dir.join(cache_file_name(photo)))
+}
+
+fn load_cached_thumbnail_image_at(path: &PathBuf) -> Option<ColorImage> {
+    if !path.exists() {
+        return None;
+    }
+
     image::open(path).ok().map(dynamic_to_color_image)
 }
 
@@ -357,6 +364,40 @@ mod tests {
                 .count(),
             MAX_READY_THUMBNAILS
         );
+    }
+
+    #[test]
+    fn load_cached_thumbnail_returns_none_without_cache_file() {
+        let photo = photo_for_test(88, Some(100), Some(200));
+        let root = std::env::temp_dir().join(format!(
+            "mycasa-missing-thumb-cache-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(load_cached_thumbnail_image_at(&root.join(cache_file_name(&photo))).is_none());
+    }
+
+    #[test]
+    fn load_cached_thumbnail_reads_existing_cache_file() {
+        let root = std::env::temp_dir().join(format!(
+            "mycasa-existing-thumb-cache-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let photo = photo_for_test(89, Some(100), Some(200));
+        let cache_path = root.join(cache_file_name(&photo));
+        image::RgbaImage::from_pixel(12, 10, image::Rgba([20, 30, 40, 255]))
+            .save_with_format(&cache_path, ImageFormat::Png)
+            .unwrap();
+
+        let image = load_cached_thumbnail_image_at(&cache_path).unwrap();
+
+        assert_eq!(image.size, [12, 10]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

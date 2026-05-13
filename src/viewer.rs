@@ -6,6 +6,7 @@ use std::{
 use egui::{Color32, ColorImage, RichText, TextureHandle, TextureOptions, Vec2};
 
 use crate::catalog::Photo;
+use crate::thumbnails::load_cached_thumbnail_image;
 
 #[derive(Clone, Copy)]
 pub enum NavigationDirection {
@@ -18,14 +19,27 @@ pub struct ViewerState {
     current: Option<Photo>,
     zoom: f32,
     loaded_photo_id: Option<i64>,
-    texture: Option<TextureHandle>,
-    receiver: Option<Receiver<ViewerResult>>,
+    preview_texture: Option<TextureHandle>,
+    full_texture: Option<TextureHandle>,
+    receiver: Option<Receiver<ViewerMessage>>,
     loading: bool,
 }
 
-struct ViewerResult {
-    id: i64,
-    image: Option<ColorImage>,
+enum ViewerMessage {
+    Preview { id: i64, image: ColorImage },
+    Full { id: i64, image: Option<ColorImage> },
+}
+
+impl ViewerMessage {
+    fn id(&self) -> i64 {
+        match self {
+            ViewerMessage::Preview { id, .. } | ViewerMessage::Full { id, .. } => *id,
+        }
+    }
+}
+
+fn message_matches_current_photo(current_photo_id: Option<i64>, message: &ViewerMessage) -> bool {
+    current_photo_id == Some(message.id())
 }
 
 impl ViewerState {
@@ -37,7 +51,8 @@ impl ViewerState {
         self.current = Some(photo);
         self.zoom = 1.0;
         self.loaded_photo_id = None;
-        self.texture = None;
+        self.preview_texture = None;
+        self.full_texture = None;
         self.receiver = None;
         self.loading = false;
     }
@@ -100,21 +115,36 @@ impl ViewerState {
             return;
         };
 
-        match receiver.try_recv() {
-            Ok(result) => {
-                self.loading = false;
-                self.receiver = None;
-                self.loaded_photo_id = Some(result.id);
-                self.texture = result.image.map(|image| {
-                    let texture_name = format!("viewer-photo-{}", result.id);
-                    ctx.load_texture(texture_name, image, TextureOptions::LINEAR)
-                });
-                ctx.request_repaint();
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.loading = false;
-                self.receiver = None;
+        loop {
+            match receiver.try_recv() {
+                Ok(message)
+                    if !message_matches_current_photo(self.current_photo_id(), &message) =>
+                {
+                    continue;
+                }
+                Ok(ViewerMessage::Preview { id, image }) => {
+                    let texture_name = format!("viewer-preview-{}", id);
+                    self.preview_texture =
+                        Some(ctx.load_texture(texture_name, image, TextureOptions::LINEAR));
+                    ctx.request_repaint();
+                }
+                Ok(ViewerMessage::Full { id, image }) => {
+                    self.loading = false;
+                    self.receiver = None;
+                    self.loaded_photo_id = Some(id);
+                    self.full_texture = image.map(|image| {
+                        let texture_name = format!("viewer-photo-{}", id);
+                        ctx.load_texture(texture_name, image, TextureOptions::LINEAR)
+                    });
+                    ctx.request_repaint();
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.loading = false;
+                    self.receiver = None;
+                    break;
+                }
             }
         }
     }
@@ -131,13 +161,25 @@ impl ViewerState {
         self.loading = true;
 
         thread::spawn(move || {
+            if let Some(preview) = load_cached_thumbnail_image(&photo) {
+                let _ = sender.send(ViewerMessage::Preview {
+                    id: photo.id,
+                    image: preview,
+                });
+                repaint_context.request_repaint();
+            }
+
             let image = load_viewer_image(&photo);
-            let _ = sender.send(ViewerResult {
+            let _ = sender.send(ViewerMessage::Full {
                 id: photo.id,
                 image,
             });
             repaint_context.request_repaint();
         });
+    }
+
+    fn visible_texture(&self) -> Option<&TextureHandle> {
+        self.full_texture.as_ref().or(self.preview_texture.as_ref())
     }
 
     fn show_image(&self, ui: &mut egui::Ui) {
@@ -148,7 +190,7 @@ impl ViewerState {
         ui.painter()
             .rect_filled(rect, 6.0, Color32::from_rgb(17, 19, 23));
 
-        if let Some(texture) = &self.texture {
+        if let Some(texture) = self.visible_texture() {
             let image_size = texture.size_vec2();
             let scale = (rect.width() / image_size.x).min(rect.height() / image_size.y) * self.zoom;
             let fitted_size = image_size * scale;
@@ -218,6 +260,36 @@ mod tests {
             adjacent_photo_id(&photos, 20, NavigationDirection::Next),
             Some(30)
         );
+    }
+
+    #[test]
+    fn ignores_messages_for_previous_photo() {
+        let message = ViewerMessage::Full { id: 2, image: None };
+
+        assert!(message_matches_current_photo(Some(2), &message));
+        assert!(!message_matches_current_photo(Some(1), &message));
+        assert!(!message_matches_current_photo(None, &message));
+    }
+
+    #[test]
+    fn viewer_prefers_full_texture_over_preview() {
+        let ctx = egui::Context::default();
+        let preview = ctx.load_texture(
+            "preview",
+            ColorImage::from_rgba_unmultiplied([1, 1], &[255, 255, 255, 255]),
+            TextureOptions::LINEAR,
+        );
+        let full = ctx.load_texture(
+            "full",
+            ColorImage::from_rgba_unmultiplied([1, 1], &[255, 255, 255, 255]),
+            TextureOptions::LINEAR,
+        );
+        let mut viewer = ViewerState::default();
+        viewer.preview_texture = Some(preview);
+        assert!(viewer.visible_texture().is_some());
+        viewer.full_texture = Some(full);
+
+        assert_eq!(viewer.visible_texture().unwrap().name(), "full");
     }
 
     #[test]

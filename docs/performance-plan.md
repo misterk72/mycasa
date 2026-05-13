@@ -45,3 +45,4 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Demandes miniatures visibles prioritaires dans la file de chargement.
 - Index SQLite explicites sur chargement recent, recherche fichier/dossier et visages par photo.
 - Recherche debouncee a 250 ms pour eviter une requete catalogue a chaque frappe.
+- Viewer charge une preview depuis le cache miniature avant l image 2048 px et ignore les reponses obsoletes.
