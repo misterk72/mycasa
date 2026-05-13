@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{self, Receiver, SyncSender},
     thread,
     time::UNIX_EPOCH,
 };
@@ -8,6 +8,8 @@ use std::{
 use walkdir::WalkDir;
 
 use crate::picasa_ini::PicasaIniEntry;
+
+const INDEX_EVENT_QUEUE_CAPACITY: usize = 512;
 
 #[derive(Debug)]
 pub enum IndexJob {
@@ -33,13 +35,13 @@ pub struct IndexedPhoto {
 }
 
 pub struct Indexer {
-    sender: Sender<IndexJob>,
+    sender: SyncSender<IndexJob>,
     receiver: Receiver<IndexJob>,
 }
 
 impl Indexer {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(INDEX_EVENT_QUEUE_CAPACITY);
         Self { sender, receiver }
     }
 
@@ -156,5 +158,10 @@ mod tests {
         assert!(is_supported_image(Path::new("web.webp")));
         assert!(!is_supported_image(Path::new("notes.txt")));
         assert!(!is_supported_image(Path::new("no-extension")));
+    }
+
+    #[test]
+    fn index_event_queue_is_bounded() {
+        assert_eq!(INDEX_EVENT_QUEUE_CAPACITY, 512);
     }
 }

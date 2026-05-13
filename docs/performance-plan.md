@@ -37,3 +37,6 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Viewer navigable au clavier avec fleches gauche/droite et prechargement des miniatures voisines.
 - Libelles de tuiles tronques au milieu pour eviter les debordements visuels.
 - Ecritures catalogue regroupees en transactions par lot pour reduire les pauses pendant l'indexation.
+- File evenements indexation bornee a 512 messages pour appliquer une pression retour au scan.
+- Scans du meme dossier dedupliques pendant qu'une indexation est deja active.
+- Chargement catalogue pagine par pas de 500 photos, plafonne a 5000 pour proteger la grille.

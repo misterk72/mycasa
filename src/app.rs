@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -9,6 +10,8 @@ use crate::catalog::{Catalog, CatalogError, Photo};
 use crate::folders::add_folder_once;
 use crate::grid::{columns_for_width, item_range_for_row, row_count};
 use crate::indexer::{IndexJob, IndexedPhoto, Indexer};
+use crate::photo_limit::{INITIAL_PHOTO_LIMIT, MAX_PHOTO_LIMIT, next_photo_limit};
+use crate::scan_state::{begin_scan, finish_scan};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
 use crate::viewer::{NavigationDirection, ViewerState, adjacent_photo_id};
 
@@ -25,6 +28,7 @@ pub struct MyCasaApp {
     thumbnails: ThumbnailCache,
     viewer: ViewerState,
     photos: Vec<Photo>,
+    photo_limit: usize,
     folders: Vec<PathBuf>,
     albums: Vec<String>,
     selected_photo: Option<i64>,
@@ -32,7 +36,7 @@ pub struct MyCasaApp {
     search: String,
     imported_since_refresh: usize,
     pending_catalog_writes: Vec<IndexedPhoto>,
-    active_scans: usize,
+    active_scan_folders: HashSet<PathBuf>,
     frame_count: u64,
     fps_window_started_at: Instant,
     displayed_fps: f32,
@@ -46,7 +50,7 @@ impl MyCasaApp {
         let mut folders = Vec::new();
 
         if let Ok(catalog) = &catalog {
-            match catalog.load_recent_photos(250) {
+            match catalog.load_recent_photos(INITIAL_PHOTO_LIMIT) {
                 Ok(loaded) => photos = loaded,
                 Err(error) => {
                     status = format!("Catalogue ouvert, lecture photos impossible: {error}")
@@ -65,6 +69,7 @@ impl MyCasaApp {
             thumbnails: ThumbnailCache::new(),
             viewer: ViewerState::default(),
             photos,
+            photo_limit: INITIAL_PHOTO_LIMIT,
             folders,
             albums: vec![
                 "Toutes les photos".to_owned(),
@@ -76,7 +81,7 @@ impl MyCasaApp {
             search: String::new(),
             imported_since_refresh: 0,
             pending_catalog_writes: Vec::new(),
-            active_scans: 0,
+            active_scan_folders: HashSet::new(),
             frame_count: 0,
             fps_window_started_at: Instant::now(),
             displayed_fps: 0.0,
@@ -93,9 +98,29 @@ impl MyCasaApp {
         }
     }
 
+    fn start_scan_folder(&mut self, folder: PathBuf) {
+        if !begin_scan(&mut self.active_scan_folders, &folder) {
+            self.status = format!("Scan deja en cours: {}", folder.display());
+            return;
+        }
+
+        self.indexer.scan_folder(folder);
+    }
+
+    fn load_more_photos(&mut self) {
+        let next_limit = next_photo_limit(self.photo_limit);
+        if next_limit == self.photo_limit {
+            self.status = format!("Limite d'affichage atteinte: {} photos", MAX_PHOTO_LIMIT);
+            return;
+        }
+
+        self.photo_limit = next_limit;
+        self.refresh_photos();
+    }
+
     fn refresh_photos(&mut self) {
         if let Ok(catalog) = &self.catalog {
-            match catalog.search_photos(&self.search, 500) {
+            match catalog.search_photos(&self.search, self.photo_limit) {
                 Ok(photos) => {
                     self.photos = photos;
                     self.status = format!("{} photo(s) dans le catalogue", self.photos.len());
@@ -147,7 +172,6 @@ impl MyCasaApp {
             processed += 1;
             match event {
                 IndexJob::Started(path) => {
-                    self.active_scans += 1;
                     self.imported_since_refresh = 0;
                     self.status = format!("Indexation demarree: {}", path.display());
                 }
@@ -162,7 +186,7 @@ impl MyCasaApp {
                     folder,
                     photos_found,
                 } => {
-                    self.active_scans = self.active_scans.saturating_sub(1);
+                    finish_scan(&mut self.active_scan_folders, &folder);
                     self.flush_catalog_writes();
                     self.status = format!(
                         "Indexation terminee: {} photo(s) trouvee(s) dans {}",
@@ -197,7 +221,7 @@ impl MyCasaApp {
             {
                 Some(path) => {
                     add_folder_once(&mut self.folders, path.clone());
-                    self.indexer.scan_folder(path);
+                    self.start_scan_folder(path);
                 }
                 None => {
                     self.status = "Selection de dossier annulee".to_owned();
@@ -224,7 +248,7 @@ impl MyCasaApp {
             match std::env::current_dir() {
                 Ok(path) => {
                     add_folder_once(&mut self.folders, path.clone());
-                    self.indexer.scan_folder(path);
+                    self.start_scan_folder(path);
                 }
                 Err(error) => self.status = format!("Dossier courant introuvable: {error}"),
             }
@@ -238,7 +262,7 @@ impl MyCasaApp {
             for folder in self.folders.clone() {
                 ui.horizontal(|ui| {
                     if ui.small_button("Scanner").clicked() {
-                        self.indexer.scan_folder(folder.clone());
+                        self.start_scan_folder(folder.clone());
                     }
                     ui.label(folder.display().to_string());
                 });
@@ -260,8 +284,16 @@ impl MyCasaApp {
                 self.refresh_photos();
             }
 
+            if ui.button("Charger plus").clicked() {
+                self.load_more_photos();
+            }
+
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(format!("{} photo(s)", self.photos.len()));
+                ui.label(format!(
+                    "{} photo(s) affichee(s), limite {}",
+                    self.photos.len(),
+                    self.photo_limit
+                ));
             });
         });
     }
@@ -463,7 +495,7 @@ impl eframe::App for MyCasaApp {
                     metrics.pending,
                     metrics.active_loads,
                     metrics.ready,
-                    self.active_scans,
+                    self.active_scan_folders.len(),
                     self.pending_catalog_writes.len(),
                     self.displayed_fps
                 ));
