@@ -7,6 +7,12 @@ use egui::{Color32, ColorImage, RichText, TextureHandle, TextureOptions, Vec2};
 
 use crate::catalog::Photo;
 
+#[derive(Clone, Copy)]
+pub enum NavigationDirection {
+    Previous,
+    Next,
+}
+
 #[derive(Default)]
 pub struct ViewerState {
     current: Option<Photo>,
@@ -23,6 +29,10 @@ struct ViewerResult {
 }
 
 impl ViewerState {
+    pub fn current_photo_id(&self) -> Option<i64> {
+        self.current.as_ref().map(|photo| photo.id)
+    }
+
     pub fn open(&mut self, photo: Photo) {
         self.current = Some(photo);
         self.zoom = 1.0;
@@ -166,6 +176,20 @@ impl ViewerState {
     }
 }
 
+pub fn adjacent_photo_id(
+    photos: &[Photo],
+    current_id: i64,
+    direction: NavigationDirection,
+) -> Option<i64> {
+    let current_index = photos.iter().position(|photo| photo.id == current_id)?;
+    let adjacent_index = match direction {
+        NavigationDirection::Previous => current_index.checked_sub(1)?,
+        NavigationDirection::Next => current_index + 1,
+    };
+
+    photos.get(adjacent_index).map(|photo| photo.id)
+}
+
 fn load_viewer_image(photo: &Photo) -> Option<ColorImage> {
     let image = image::open(&photo.path)
         .ok()?
@@ -174,4 +198,59 @@ fn load_viewer_image(photo: &Photo) -> Option<ColorImage> {
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.into_raw();
     Some(ColorImage::from_rgba_unmultiplied(size, &pixels))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn finds_adjacent_photo_ids() {
+        let photos = vec![photo_for_test(10), photo_for_test(20), photo_for_test(30)];
+
+        assert_eq!(
+            adjacent_photo_id(&photos, 20, NavigationDirection::Previous),
+            Some(10)
+        );
+        assert_eq!(
+            adjacent_photo_id(&photos, 20, NavigationDirection::Next),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn adjacent_photo_id_stops_at_edges() {
+        let photos = vec![photo_for_test(10), photo_for_test(20)];
+
+        assert_eq!(
+            adjacent_photo_id(&photos, 10, NavigationDirection::Previous),
+            None
+        );
+        assert_eq!(
+            adjacent_photo_id(&photos, 20, NavigationDirection::Next),
+            None
+        );
+        assert_eq!(
+            adjacent_photo_id(&photos, 99, NavigationDirection::Next),
+            None
+        );
+    }
+
+    fn photo_for_test(id: i64) -> Photo {
+        Photo {
+            id,
+            path: PathBuf::from(format!("/tmp/photo-{id}.jpg")),
+            file_size: None,
+            modified_at: None,
+            width: None,
+            height: None,
+            captured_at: None,
+            picasa_caption: None,
+            picasa_keywords: None,
+            picasa_starred: false,
+            picasa_face_count: 0,
+        }
+    }
 }

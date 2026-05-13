@@ -1,16 +1,23 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use egui::{Align, Color32, Layout, RichText, ScrollArea, Sense, Stroke, Vec2};
 
 use crate::catalog::{Catalog, CatalogError, Photo};
 use crate::folders::add_folder_once;
-use crate::indexer::{IndexJob, Indexer};
+use crate::grid::{columns_for_width, item_range_for_row, row_count};
+use crate::indexer::{IndexJob, IndexedPhoto, Indexer};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
-use crate::viewer::ViewerState;
+use crate::viewer::{NavigationDirection, ViewerState, adjacent_photo_id};
 
 const THUMBNAIL_SIZE: f32 = 144.0;
 const TILE_PADDING: f32 = 10.0;
+const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
+const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 34.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
+const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
@@ -24,6 +31,11 @@ pub struct MyCasaApp {
     status: String,
     search: String,
     imported_since_refresh: usize,
+    pending_catalog_writes: Vec<IndexedPhoto>,
+    active_scans: usize,
+    frame_count: u64,
+    fps_window_started_at: Instant,
+    displayed_fps: f32,
 }
 
 impl MyCasaApp {
@@ -63,6 +75,21 @@ impl MyCasaApp {
             status,
             search: String::new(),
             imported_since_refresh: 0,
+            pending_catalog_writes: Vec::new(),
+            active_scans: 0,
+            frame_count: 0,
+            fps_window_started_at: Instant::now(),
+            displayed_fps: 0.0,
+        }
+    }
+
+    fn update_frame_metrics(&mut self) {
+        self.frame_count += 1;
+        let elapsed = self.fps_window_started_at.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            self.displayed_fps = self.frame_count as f32 / elapsed.as_secs_f32();
+            self.frame_count = 0;
+            self.fps_window_started_at = Instant::now();
         }
     }
 
@@ -78,6 +105,39 @@ impl MyCasaApp {
         }
     }
 
+    fn flush_catalog_writes(&mut self) {
+        if self.pending_catalog_writes.is_empty() {
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_catalog_writes);
+        let last_path = pending.last().map(|photo| photo.path.clone());
+        let result = match &mut self.catalog {
+            Ok(catalog) => catalog.upsert_photos(&pending),
+            Err(error) => {
+                self.status = format!("Catalogue indisponible: {error}");
+                return;
+            }
+        };
+
+        match result {
+            Ok(written) => {
+                self.imported_since_refresh += written;
+                if let Some(path) = last_path {
+                    self.status =
+                        format!("{written} photo(s) ecrite(s), derniere: {}", path.display());
+                }
+                if self.imported_since_refresh >= REFRESH_AFTER_IMPORTED_PHOTOS {
+                    self.imported_since_refresh = 0;
+                    self.refresh_photos();
+                }
+            }
+            Err(error) => {
+                self.status = format!("Ecriture catalogue impossible: {error}");
+            }
+        }
+    }
+
     fn poll_background_work(&mut self) {
         let mut processed = 0;
         while processed < MAX_INDEX_EVENTS_PER_FRAME {
@@ -87,29 +147,23 @@ impl MyCasaApp {
             processed += 1;
             match event {
                 IndexJob::Started(path) => {
+                    self.active_scans += 1;
                     self.imported_since_refresh = 0;
                     self.status = format!("Indexation demarree: {}", path.display());
                 }
                 IndexJob::FoundPhoto(photo) => {
-                    if let Ok(catalog) = &self.catalog {
-                        match catalog.upsert_photo(&photo) {
-                            Ok(()) => {
-                                self.imported_since_refresh += 1;
-                                if self.imported_since_refresh % 25 == 0 {
-                                    self.refresh_photos();
-                                }
-                                self.status = format!("Photo indexee: {}", photo.path.display());
-                            }
-                            Err(error) => {
-                                self.status = format!("Ecriture catalogue impossible: {error}");
-                            }
-                        }
-                    }
+                    self.pending_catalog_writes.push(photo);
+                    self.status = format!(
+                        "Indexation en cours: {} photo(s) en attente d'ecriture",
+                        self.pending_catalog_writes.len()
+                    );
                 }
                 IndexJob::Finished {
                     folder,
                     photos_found,
                 } => {
+                    self.active_scans = self.active_scans.saturating_sub(1);
+                    self.flush_catalog_writes();
                     self.status = format!(
                         "Indexation terminee: {} photo(s) trouvee(s) dans {}",
                         photos_found,
@@ -123,6 +177,8 @@ impl MyCasaApp {
                 }
             }
         }
+
+        self.flush_catalog_writes();
 
         if processed == MAX_INDEX_EVENTS_PER_FRAME {
             self.status =
@@ -151,13 +207,17 @@ impl MyCasaApp {
 
         if ui.button("Charger dossiers Picasa").clicked() {
             let picasa_folders = crate::picasa_db::load_watched_folders();
+            let picasa_contacts = crate::picasa_db::load_contacts();
             let mut added = 0;
             for folder in picasa_folders {
                 if add_folder_once(&mut self.folders, folder) {
                     added += 1;
                 }
             }
-            self.status = format!("{added} dossier(s) surveille(s) Picasa charges");
+            self.status = format!(
+                "{added} dossier(s) surveille(s) Picasa charges, {} contact(s) detecte(s)",
+                picasa_contacts.len()
+            );
         }
 
         if ui.button("Scanner le dossier courant").clicked() {
@@ -214,32 +274,87 @@ impl MyCasaApp {
             return;
         }
 
-        let available_width = ui.available_width().max(THUMBNAIL_SIZE);
-        let tile_width = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
-        let columns = (available_width / tile_width).floor().max(1.0) as usize;
-
-        let rows: Vec<Vec<Photo>> = self
-            .photos
-            .chunks(columns)
-            .map(|row| row.to_vec())
-            .collect();
+        let columns = columns_for_width(ui.available_width(), TILE_WIDTH);
+        let total_rows = row_count(self.photos.len(), columns);
 
         ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for row in rows {
-                    ui.horizontal(|ui| {
-                        for photo in &row {
-                            self.photo_tile(ui, photo);
-                        }
-                    });
-                }
-            });
+            .show_rows(
+                ui,
+                TILE_HEIGHT + TILE_PADDING,
+                total_rows,
+                |ui, row_range| {
+                    for row_index in row_range {
+                        ui.horizontal(|ui| {
+                            for photo_index in
+                                item_range_for_row(row_index, columns, self.photos.len())
+                            {
+                                let photo = self.photos[photo_index].clone();
+                                self.photo_tile(ui, &photo);
+                            }
+                        });
+                    }
+                },
+            );
+    }
+
+    fn handle_viewer_keyboard(&mut self, ctx: &egui::Context) {
+        let Some(current_id) = self.viewer.current_photo_id() else {
+            return;
+        };
+
+        let direction = ctx.input(|input| {
+            if input.key_pressed(egui::Key::ArrowLeft) {
+                Some(NavigationDirection::Previous)
+            } else if input.key_pressed(egui::Key::ArrowRight) {
+                Some(NavigationDirection::Next)
+            } else {
+                None
+            }
+        });
+
+        let Some(direction) = direction else {
+            return;
+        };
+        let Some(next_id) = adjacent_photo_id(&self.photos, current_id, direction) else {
+            return;
+        };
+        let Some(photo) = self
+            .photos
+            .iter()
+            .find(|photo| photo.id == next_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        self.selected_photo = Some(photo.id);
+        self.viewer.open(photo);
+    }
+
+    fn preload_viewer_neighbors(&mut self, ctx: &egui::Context) {
+        let Some(current_id) = self.viewer.current_photo_id() else {
+            return;
+        };
+
+        let neighbor_ids = [
+            adjacent_photo_id(&self.photos, current_id, NavigationDirection::Previous),
+            adjacent_photo_id(&self.photos, current_id, NavigationDirection::Next),
+        ];
+        let neighbors: Vec<Photo> = neighbor_ids
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.photos.iter().find(|photo| photo.id == id).cloned())
+            .collect();
+
+        for photo in &neighbors {
+            let _ = self.thumbnails.state_for(ctx, photo);
+        }
     }
 
     fn photo_tile(&mut self, ui: &mut egui::Ui, photo: &Photo) {
         let selected = self.selected_photo == Some(photo.id);
-        let desired_size = Vec2::new(THUMBNAIL_SIZE + TILE_PADDING, THUMBNAIL_SIZE + 34.0);
+        let desired_size = Vec2::new(THUMBNAIL_SIZE + TILE_PADDING, TILE_HEIGHT);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
 
         if response.clicked() {
@@ -296,6 +411,17 @@ impl MyCasaApp {
                     Color32::WHITE,
                 );
             }
+            ThumbnailState::Unavailable => {
+                ui.painter()
+                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(29, 26, 28));
+                ui.painter().text(
+                    thumb_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "indisponible",
+                    egui::TextStyle::Small.resolve(ui.style()),
+                    Color32::from_rgb(210, 140, 140),
+                );
+            }
         }
 
         let name = photo
@@ -303,10 +429,11 @@ impl MyCasaApp {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("photo");
+        let label = crate::ui_text::middle_truncate(name, 24);
         ui.painter().text(
             rect.center_bottom() - Vec2::new(0.0, 14.0),
             egui::Align2::CENTER_CENTER,
-            name,
+            label,
             egui::TextStyle::Small.resolve(ui.style()),
             Color32::from_gray(220),
         );
@@ -315,6 +442,7 @@ impl MyCasaApp {
 
 impl eframe::App for MyCasaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.update_frame_metrics();
         self.poll_background_work();
 
         egui::SidePanel::left("sidebar")
@@ -325,6 +453,20 @@ impl eframe::App for MyCasaApp {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
+                let metrics = self.thumbnails.metrics();
+                ui.separator();
+                ui.label(format!(
+                    "thumbs cache:{} gen:{} fail:{} pending:{} active:{} ready:{} scans:{} dbq:{} fps:{:.0}",
+                    metrics.cache_hits,
+                    metrics.generated,
+                    metrics.failed,
+                    metrics.pending,
+                    metrics.active_loads,
+                    metrics.ready,
+                    self.active_scans,
+                    self.pending_catalog_writes.len(),
+                    self.displayed_fps
+                ));
                 if let Ok(catalog) = &self.catalog {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(catalog.path().display().to_string());
@@ -339,6 +481,9 @@ impl eframe::App for MyCasaApp {
             self.ui_grid(ui);
         });
 
+        self.handle_viewer_keyboard(ctx);
+        self.preload_viewer_neighbors(ctx);
         self.viewer.show(ctx);
+        ctx.request_repaint_after(Duration::from_millis(250));
     }
 }

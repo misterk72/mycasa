@@ -25,7 +25,7 @@ Créer le projet natif MyCasa dans `/home/kassabji/workspace/mycasa`, sauvegarde
 - Cache de miniatures stub, sans retouche ni ML en V1.
 
 ## Tests
-- Les prochains développements doivent obligatoirement suivre une approche TDD : test échouant d'abord, implémentation ensuite.
+- Les prochains développements doivent obligatoirement suivre une approche TDD : test échouant d'abord, implémentation minimale ensuite, puis refactorisation à tests verts.
 - `cargo check` doit passer.
 - `cargo test` doit passer.
 - L’application doit démarrer sur Linux.

@@ -44,10 +44,14 @@ Decision actuelle : importer automatiquement les formats lisibles et stables (`w
 
 ## Implementation Actuelle
 - Bouton `Charger dossiers Picasa` : lit `watchedfolders.txt` depuis le profil Picasa PlayOnLinux detecte et traduit les chemins `Z:\...` vers `/...`.
+- Lecture `contacts.xml` : parse les contacts Picasa et affiche le nombre de contacts detectes.
 - Import `.picasa.ini` pendant l'indexation : captions, keywords, favoris, filters et visages.
 - Table `photo_faces` : stocke `rect64`, `contact_id`, `contact_name` pour chaque visage importe.
 - Le viewer affiche le nombre de visages Picasa associes a la photo.
 - Tests unitaires existants : parsing `.picasa.ini`, conversion de chemins Wine, migrations SQLite, upsert photo/faces, extensions image supportees.
+
+## Prochain Increment
+Relier les contacts Picasa importes aux visages stockes pour exposer les noms de personnes dans le viewer et les filtres catalogue.
 
 ## Limites Assumee
 - Pas de compatibilite binaire avec la base Picasa (`.pmp/.db`).

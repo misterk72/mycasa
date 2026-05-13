@@ -1,0 +1,39 @@
+# Plan Performance Et Fluidite
+
+## Objectif
+Valider rapidement que MyCasa peut afficher un dossier photo NAS avec une experience fluide et visuellement credible avant d'approfondir l'import Picasa avance.
+
+## Cibles De Faisabilite
+- Demarrage sans freeze avec un catalogue existant.
+- Grille scrollable sans rendre les lignes hors ecran.
+- Miniatures chargees progressivement, avec cache disque local.
+- Aucun decodage image lourd sur le thread UI.
+- Statut visible pour diagnostiquer cache, generation, files d'attente et FPS approximatif.
+
+## Mesures Affichees
+- `cache` : miniatures lues depuis le cache disque.
+- `gen` : miniatures generees depuis l'original.
+- `fail` : miniatures impossibles a charger.
+- `pending` : miniatures en attente de worker.
+- `active` : workers miniatures actifs.
+- `ready` : textures miniatures chargees en memoire.
+- `scans` : indexations actives.
+- `dbq` : photos en attente d'ecriture catalogue.
+- `fps` : compteur approximatif de frames par seconde.
+
+## Priorites D'Implementation
+1. Virtualiser la grille avec `show_rows`.
+2. Tester et exposer les metriques de miniatures.
+3. Ameliorer le rendu des tuiles et de la barre d'outils.
+4. Ajouter prechargement viewer precedent/suivant apres validation de la grille.
+
+## Regle TDD
+Chaque changement de logique doit commencer par un test rouge, puis passer au vert, puis etre refactorise si necessaire.
+
+## Etat Courant
+- Grille virtualisee avec calcul de colonnes, lignes et plages d'items couvert par tests unitaires.
+- Cache disque de miniatures teste : invalidation par taille/mtime, generation initiale, relecture cache sans original disponible, echec explicite si cache et original absents.
+- Concurrence miniatures limitee a 3 workers pour reduire la pression sur un NAS.
+- Viewer navigable au clavier avec fleches gauche/droite et prechargement des miniatures voisines.
+- Libelles de tuiles tronques au milieu pour eviter les debordements visuels.
+- Ecritures catalogue regroupees en transactions par lot pour reduire les pauses pendant l'indexation.

@@ -1,10 +1,12 @@
 mod app;
 mod catalog;
 mod folders;
+mod grid;
 mod indexer;
 mod picasa_db;
 mod picasa_ini;
 mod thumbnails;
+mod ui_text;
 mod viewer;
 
 use app::MyCasaApp;

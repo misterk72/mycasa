@@ -4,8 +4,9 @@
 Tout prochain developpement MyCasa doit etre fait en TDD.
 
 Concretement :
-- Ecrire ou mettre a jour un test qui echoue avant de modifier le comportement applicatif.
-- Implementer le minimum de code pour faire passer ce test.
+- Red : ecrire ou mettre a jour un test qui echoue avant de modifier le comportement applicatif.
+- Green : implementer le minimum de code pour faire passer ce test.
+- Refactor : nettoyer la conception, supprimer la duplication et ameliorer les noms/decoupages sans changer le comportement, en gardant les tests au vert.
 - Lancer `cargo test` avant de considerer la modification terminee.
 - Lancer `cargo check` pour verifier le build courant.
 - Pour les changements UI difficiles a tester unitairement, isoler la logique testable dans un module ou une fonction pure, puis tester cette logique avant de brancher l'UI.
@@ -22,3 +23,12 @@ Exceptions autorisees :
 - Conversion des chemins Picasa/Wine vers chemins Linux.
 - Indexation de dossiers et filtrage des extensions image.
 - Cache disque de miniatures.
+
+## Backlog Priorise
+1. Faisabilite fluidite : virtualiser la grille, mesurer cache/generation de miniatures et afficher un compteur FPS approximatif.
+2. Miniatures rapides : valider le cache disque par tests unitaires et eviter de regenerer les miniatures existantes.
+3. Esthetique Picasa-like : tuiles plus propres, toolbar compacte, et etats visuels de chargement/selection/hover.
+4. Import Picasa robuste : parser `contacts.xml`, relier les contacts aux faces `.picasa.ini`, puis exposer les noms dans le viewer.
+5. Catalogue exploitable : ajouter filtres favoris/visages/mots-cles et recherche par metadata Picasa.
+
+Chaque item doit etre implemente par petits increments TDD avec un test rouge avant le code de production.

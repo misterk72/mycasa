@@ -118,75 +118,23 @@ impl Catalog {
         Ok(photos)
     }
 
+    #[cfg(test)]
     pub fn upsert_photo(&self, photo: &IndexedPhoto) -> Result<(), CatalogError> {
-        self.connection.execute(
-            "
-            INSERT INTO photos (
-                path, file_name, parent_path, file_size, modified_at, width, height,
-                picasa_caption, picasa_keywords, picasa_starred, picasa_filters
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-            ON CONFLICT(path) DO UPDATE SET
-                file_name = excluded.file_name,
-                parent_path = excluded.parent_path,
-                file_size = excluded.file_size,
-                modified_at = excluded.modified_at,
-                width = excluded.width,
-                height = excluded.height,
-                picasa_caption = excluded.picasa_caption,
-                picasa_keywords = excluded.picasa_keywords,
-                picasa_starred = excluded.picasa_starred,
-                picasa_filters = excluded.picasa_filters
-            ",
-            params![
-                photo.path.to_string_lossy(),
-                photo.file_name,
-                photo.parent_path.to_string_lossy(),
-                photo.file_size.map(|value| value as i64),
-                photo.modified_at,
-                photo.width.map(|value| value as i64),
-                photo.height.map(|value| value as i64),
-                photo
-                    .picasa
-                    .as_ref()
-                    .and_then(|entry| entry.caption.as_deref()),
-                photo
-                    .picasa
-                    .as_ref()
-                    .and_then(|entry| entry.keywords.as_deref()),
-                photo
-                    .picasa
-                    .as_ref()
-                    .map(|entry| i64::from(entry.starred))
-                    .unwrap_or(0),
-                photo
-                    .picasa
-                    .as_ref()
-                    .and_then(|entry| entry.filters.as_deref()),
-            ],
-        )?;
-        let photo_id: i64 = self.connection.query_row(
-            "SELECT id FROM photos WHERE path = ?1",
-            params![photo.path.to_string_lossy()],
-            |row| row.get(0),
-        )?;
-        self.connection.execute(
-            "DELETE FROM photo_faces WHERE photo_id = ?1",
-            params![photo_id],
-        )?;
-        if let Some(picasa) = &photo.picasa {
-            for face in &picasa.faces {
-                self.connection.execute(
-                    "
-                    INSERT INTO photo_faces (photo_id, rect64, contact_id, contact_name)
-                    VALUES (?1, ?2, ?3, ?4)
-                    ",
-                    params![photo_id, face.rect64, face.contact_id, face.name],
-                )?;
-            }
+        upsert_photo_on_connection(&self.connection, photo)
+    }
+
+    pub fn upsert_photos(&mut self, photos: &[IndexedPhoto]) -> Result<usize, CatalogError> {
+        if photos.is_empty() {
+            return Ok(0);
         }
 
-        Ok(())
+        let transaction = self.connection.transaction()?;
+        for photo in photos {
+            upsert_photo_on_connection(&transaction, photo)?;
+        }
+        transaction.commit()?;
+
+        Ok(photos.len())
     }
 
     pub fn load_folders(&self, limit: usize) -> Result<Vec<PathBuf>, CatalogError> {
@@ -282,6 +230,80 @@ impl Catalog {
     }
 }
 
+fn upsert_photo_on_connection(
+    connection: &Connection,
+    photo: &IndexedPhoto,
+) -> Result<(), CatalogError> {
+    connection.execute(
+        "
+        INSERT INTO photos (
+            path, file_name, parent_path, file_size, modified_at, width, height,
+            picasa_caption, picasa_keywords, picasa_starred, picasa_filters
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(path) DO UPDATE SET
+            file_name = excluded.file_name,
+            parent_path = excluded.parent_path,
+            file_size = excluded.file_size,
+            modified_at = excluded.modified_at,
+            width = excluded.width,
+            height = excluded.height,
+            picasa_caption = excluded.picasa_caption,
+            picasa_keywords = excluded.picasa_keywords,
+            picasa_starred = excluded.picasa_starred,
+            picasa_filters = excluded.picasa_filters
+        ",
+        params![
+            photo.path.to_string_lossy(),
+            photo.file_name,
+            photo.parent_path.to_string_lossy(),
+            photo.file_size.map(|value| value as i64),
+            photo.modified_at,
+            photo.width.map(|value| value as i64),
+            photo.height.map(|value| value as i64),
+            photo
+                .picasa
+                .as_ref()
+                .and_then(|entry| entry.caption.as_deref()),
+            photo
+                .picasa
+                .as_ref()
+                .and_then(|entry| entry.keywords.as_deref()),
+            photo
+                .picasa
+                .as_ref()
+                .map(|entry| i64::from(entry.starred))
+                .unwrap_or(0),
+            photo
+                .picasa
+                .as_ref()
+                .and_then(|entry| entry.filters.as_deref()),
+        ],
+    )?;
+    let photo_id: i64 = connection.query_row(
+        "SELECT id FROM photos WHERE path = ?1",
+        params![photo.path.to_string_lossy()],
+        |row| row.get(0),
+    )?;
+    connection.execute(
+        "DELETE FROM photo_faces WHERE photo_id = ?1",
+        params![photo_id],
+    )?;
+    if let Some(picasa) = &photo.picasa {
+        for face in &picasa.faces {
+            connection.execute(
+                "
+                INSERT INTO photo_faces (photo_id, rect64, contact_id, contact_name)
+                VALUES (?1, ?2, ?3, ?4)
+                ",
+                params![photo_id, face.rect64, face.contact_id, face.name],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +346,24 @@ mod tests {
         assert!(has_column(&catalog.connection, "photos", "picasa_caption"));
         assert!(has_column(&catalog.connection, "photos", "picasa_filters"));
         assert!(has_table(&catalog.connection, "photo_faces"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn upsert_photos_batches_multiple_rows() {
+        let path = test_db_path("upsert-batch");
+        let mut catalog = Catalog::open(path.clone()).unwrap();
+        let photos = vec![
+            crate::indexer::IndexedPhoto::for_test(PathBuf::from("/photos/one.jpg")),
+            crate::indexer::IndexedPhoto::for_test(PathBuf::from("/photos/two.jpg")),
+        ];
+
+        let written = catalog.upsert_photos(&photos).unwrap();
+        let loaded = catalog.search_photos("/photos", 10).unwrap();
+
+        assert_eq!(written, 2);
+        assert_eq!(loaded.len(), 2);
 
         let _ = std::fs::remove_file(path);
     }

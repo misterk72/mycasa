@@ -1,9 +1,14 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PicasaContact {
+    pub id: String,
+    pub name: String,
+    pub modified_time: Option<String>,
+}
+
 pub fn load_watched_folders() -> Vec<PathBuf> {
-    picasa_profile_candidates()
-        .into_iter()
-        .find(|profile| profile.exists())
+    picasa_profile()
         .map(|profile| profile.join("../Picasa2Albums/watchedfolders.txt"))
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|content| {
@@ -14,6 +19,57 @@ pub fn load_watched_folders() -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub fn load_contacts() -> Vec<PicasaContact> {
+    picasa_profile()
+        .map(|profile| profile.join("contacts/contacts.xml"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|content| parse_contacts_xml(&content))
+        .unwrap_or_default()
+}
+
+pub fn parse_contacts_xml(content: &str) -> Vec<PicasaContact> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if !line.starts_with("<contact ") {
+                return None;
+            }
+
+            let id = xml_attr(line, "id")?;
+            let name = xml_attr(line, "name")?;
+            let modified_time = xml_attr(line, "modified_time");
+            Some(PicasaContact {
+                id,
+                name,
+                modified_time,
+            })
+        })
+        .collect()
+}
+
+fn xml_attr(line: &str, attr: &str) -> Option<String> {
+    let prefix = format!("{attr}=\"");
+    let value_start = line.find(&prefix)? + prefix.len();
+    let value = line[value_start..].split_once('"')?.0;
+    Some(unescape_xml_attr(value))
+}
+
+fn unescape_xml_attr(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn picasa_profile() -> Option<PathBuf> {
+    picasa_profile_candidates()
+        .into_iter()
+        .find(|profile| profile.exists())
 }
 
 fn picasa_profile_candidates() -> Vec<PathBuf> {
@@ -68,6 +124,34 @@ mod tests {
         assert_eq!(
             wine_path_to_linux(r"Z:\mnt\nas_Media\Photos_sorted\").unwrap(),
             PathBuf::from("/mnt/nas_Media/Photos_sorted/")
+        );
+    }
+
+    #[test]
+    fn parses_contacts_xml() {
+        let contacts = parse_contacts_xml(
+            r#"
+<contacts>
+ <contact id="e251f092e07b1008" name="Christophe Kassabji" modified_time="2022-09-22T23:52:05+02:00" local_contact="1"/>
+ <contact id="43793bd32caffa75" name="Marie Desbos" modified_time="2022-09-22T23:54:47+02:00" local_contact="1"/>
+</contacts>
+"#,
+        );
+
+        assert_eq!(
+            contacts,
+            vec![
+                PicasaContact {
+                    id: "e251f092e07b1008".to_owned(),
+                    name: "Christophe Kassabji".to_owned(),
+                    modified_time: Some("2022-09-22T23:52:05+02:00".to_owned()),
+                },
+                PicasaContact {
+                    id: "43793bd32caffa75".to_owned(),
+                    name: "Marie Desbos".to_owned(),
+                    modified_time: Some("2022-09-22T23:54:47+02:00".to_owned()),
+                },
+            ]
         );
     }
 }
