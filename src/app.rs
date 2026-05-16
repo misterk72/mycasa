@@ -16,17 +16,19 @@ use crate::scan_state::{begin_scan, finish_scan};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
 use crate::viewer::{NavigationDirection, ViewerState, adjacent_photo_id};
 
-const THUMBNAIL_SIZE: f32 = 144.0;
-const TILE_PADDING: f32 = 10.0;
+const THUMBNAIL_SIZE: f32 = 132.0;
+const TILE_PADDING: f32 = 8.0;
 const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
-const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 34.0;
+const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const PICASA_BLUE: Color32 = Color32::from_rgb(59, 139, 190);
-const PANEL_BG: Color32 = Color32::from_rgb(237, 239, 242);
-const LIGHTBOX_BG: Color32 = Color32::from_rgb(246, 246, 244);
-const TILE_SHADOW: Color32 = Color32::from_rgb(184, 184, 184);
+const PANEL_BG: Color32 = Color32::from_rgb(231, 235, 239);
+const LIGHTBOX_BG: Color32 = Color32::from_rgb(250, 250, 248);
+const TILE_SHADOW: Color32 = Color32::from_rgb(205, 205, 202);
+const CHROME_BG: Color32 = Color32::from_rgb(236, 237, 238);
+const CHROME_BORDER: Color32 = Color32::from_rgb(176, 182, 188);
 
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
@@ -274,7 +276,7 @@ impl MyCasaApp {
                 } else {
                     for folder in self.folders.clone() {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("📁").size(14.0));
+                            ui.label(RichText::new("▸").size(12.0).color(Color32::from_gray(110)));
                             let folder_name = folder
                                 .file_name()
                                 .and_then(|name| name.to_str())
@@ -308,6 +310,11 @@ impl MyCasaApp {
     }
 
     fn ui_top_chrome(&mut self, ui: &mut egui::Ui) {
+        ui.painter().rect_filled(ui.max_rect(), 0.0, CHROME_BG);
+        ui.painter().line_segment(
+            [ui.max_rect().left_bottom(), ui.max_rect().right_bottom()],
+            Stroke::new(1.0, CHROME_BORDER),
+        );
         ui.horizontal(|ui| {
             for label in [
                 "Fichier",
@@ -319,7 +326,11 @@ impl MyCasaApp {
                 "Outils",
                 "Aide",
             ] {
-                ui.label(RichText::new(label).size(13.0));
+                ui.label(
+                    RichText::new(label)
+                        .size(13.0)
+                        .color(Color32::from_gray(35)),
+                );
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.hyperlink_to("Connexion aux albums Web", "https://picasa.google.com/");
@@ -327,16 +338,16 @@ impl MyCasaApp {
         });
         ui.separator();
         ui.horizontal(|ui| {
-            if ui.button("📷 Importer").clicked() {
+            if ui.button("Importer").clicked() {
                 self.pick_folder_and_scan();
             }
-            if ui.button("▶ Diaporama").clicked() {
+            if ui.button("Diaporama").clicked() {
                 self.status = "Diaporama: a implementer".to_owned();
             }
-            if ui.button("🕘 Chronologie").clicked() {
+            if ui.button("Chronologie").clicked() {
                 self.status = "Chronologie: a implementer".to_owned();
             }
-            if ui.button("💿 CD cadeau").clicked() {
+            if ui.button("CD cadeau").clicked() {
                 self.status = "CD cadeau: a implementer".to_owned();
             }
             if ui.button("Scanner dossier courant").clicked() {
@@ -350,7 +361,7 @@ impl MyCasaApp {
                 if response.changed() {
                     self.search_debouncer.mark_changed(Instant::now());
                 }
-                if ui.button("🔍").clicked() {
+                if ui.button("Rechercher").clicked() {
                     self.refresh_photos();
                 }
             });
@@ -359,7 +370,11 @@ impl MyCasaApp {
 
     fn ui_collection_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("📁").size(28.0));
+            ui.label(
+                RichText::new("▱")
+                    .size(28.0)
+                    .color(Color32::from_rgb(190, 139, 65)),
+            );
             ui.vertical(|ui| {
                 ui.label(
                     RichText::new("Phototheque")
@@ -380,7 +395,7 @@ impl MyCasaApp {
         });
         ui.add_space(4.0);
         ui.label(RichText::new("Ajouter une description").color(Color32::from_gray(170)));
-        ui.add_space(10.0);
+        ui.add_space(6.0);
     }
 
     fn ui_top_bar(&mut self, ui: &mut egui::Ui) {
@@ -502,12 +517,12 @@ impl MyCasaApp {
             Color32::WHITE
         };
 
-        let shadow_rect = rect.translate(Vec2::new(2.0, 2.0));
-        ui.painter().rect_filled(shadow_rect, 2.0, TILE_SHADOW);
-        ui.painter().rect_filled(rect, 2.0, fill);
+        let shadow_rect = rect.translate(Vec2::new(1.5, 1.5));
+        ui.painter().rect_filled(shadow_rect, 1.0, TILE_SHADOW);
+        ui.painter().rect_filled(rect, 1.0, fill);
         ui.painter().rect_stroke(
             rect,
-            2.0,
+            1.0,
             Stroke::new(
                 if selected { 2.0 } else { 1.0 },
                 if selected {
@@ -520,8 +535,8 @@ impl MyCasaApp {
         );
 
         let thumb_rect = egui::Rect::from_min_size(
-            rect.min + Vec2::new(TILE_PADDING / 2.0, TILE_PADDING / 2.0),
-            Vec2::splat(THUMBNAIL_SIZE),
+            rect.min + Vec2::new(TILE_PADDING, TILE_PADDING),
+            Vec2::splat(THUMBNAIL_SIZE - TILE_PADDING),
         );
 
         match self.thumbnails.state_for(ui.ctx(), photo) {
@@ -570,9 +585,9 @@ impl MyCasaApp {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("photo");
-        let label = crate::ui_text::middle_truncate(name, 24);
+        let label = crate::ui_text::middle_truncate(name, 22);
         ui.painter().text(
-            rect.center_bottom() - Vec2::new(0.0, 14.0),
+            rect.center_bottom() - Vec2::new(0.0, 11.0),
             egui::Align2::CENTER_CENTER,
             label,
             egui::TextStyle::Small.resolve(ui.style()),
@@ -615,27 +630,20 @@ impl MyCasaApp {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, Color32::from_rgb(238, 240, 242));
         ui.vertical(|ui| {
-            let strip_rect = egui::Rect::from_min_size(
-                ui.min_rect().min,
-                Vec2::new(ui.available_width(), 5.0),
-            );
+            let strip_rect =
+                egui::Rect::from_min_size(ui.min_rect().min, Vec2::new(ui.available_width(), 5.0));
             ui.painter().rect_filled(strip_rect, 0.0, PICASA_BLUE);
             ui.add_space(7.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&self.status).color(Color32::from_gray(55)));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(format!(
-                        "{} photos | cache:{} gen:{} fail:{} evict:{} pending:{} active:{} ready:{} scans:{} dbq:{} fps:{:.0}",
+                        "{} photos | cache:{} gen:{} pending:{} active:{} fps:{:.0}",
                         self.photos.len(),
                         metrics.cache_hits,
                         metrics.generated,
-                        metrics.failed,
-                        metrics.evicted,
                         metrics.pending,
                         metrics.active_loads,
-                        metrics.ready,
-                        self.active_scan_folders.len(),
-                        self.pending_catalog_writes.len(),
                         self.displayed_fps
                     ));
                 });
@@ -643,9 +651,21 @@ impl MyCasaApp {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
-                ui.label(RichText::new("Dossier selectionne").color(PICASA_BLUE).strong());
+                ui.label(
+                    RichText::new("Dossier selectionne")
+                        .color(PICASA_BLUE)
+                        .strong(),
+                );
                 ui.add_space(120.0);
-                for label in ["Album Web", "E-mail", "Imprimer", "Commander", "BlogThis!", "Montage", "Exporter"] {
+                for label in [
+                    "Album Web",
+                    "E-mail",
+                    "Imprimer",
+                    "Commander",
+                    "BlogThis!",
+                    "Montage",
+                    "Exporter",
+                ] {
                     if ui.button(label).clicked() {
                         self.status = format!("{label}: a implementer");
                     }
@@ -669,7 +689,7 @@ impl eframe::App for MyCasaApp {
         }
 
         egui::TopBottomPanel::top("picasa_top_chrome")
-            .exact_height(64.0)
+            .exact_height(60.0)
             .show(ctx, |ui| self.ui_top_chrome(ui));
 
         egui::SidePanel::left("sidebar")
@@ -680,12 +700,12 @@ impl eframe::App for MyCasaApp {
 
         egui::SidePanel::right("people_panel")
             .resizable(true)
-            .default_width(190.0)
+            .default_width(184.0)
             .frame(egui::Frame::default().fill(PANEL_BG))
             .show(ctx, |ui| self.ui_people_panel(ui));
 
         egui::TopBottomPanel::bottom("picasa_bottom_tray")
-            .exact_height(92.0)
+            .exact_height(96.0)
             .show(ctx, |ui| self.ui_bottom_tray(ui));
 
         egui::CentralPanel::default()
