@@ -91,7 +91,12 @@ impl ViewerState {
         self.loading = false;
     }
 
-    pub fn show_embedded(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+    pub fn show_embedded_in_rect(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        root_rect: egui::Rect,
+    ) {
         let Some(photo) = self.current.clone() else {
             return;
         };
@@ -99,14 +104,19 @@ impl ViewerState {
         apply_viewer_visuals(ui);
         self.poll_loaded(ctx);
         self.ensure_loading(ctx, &photo);
-        self.show_contents(ui, &photo);
+        self.show_contents(ui, &photo, root_rect);
     }
 
-    fn show_contents(&mut self, ui: &mut egui::Ui, photo: &Photo) {
-        self.show_filmstrip(ui);
-        ui.separator();
+    fn show_contents(&mut self, ui: &mut egui::Ui, photo: &Photo, root_rect: egui::Rect) {
+        ui.allocate_rect(root_rect, egui::Sense::hover());
+        ui.painter().rect_filled(root_rect, 0.0, VIEWER_BG);
+        let filmstrip_rect = viewer_filmstrip_rect(root_rect);
+        self.show_filmstrip(ui, filmstrip_rect);
 
-        let body_rect = viewer_body_rect(ui.cursor().min, ui.max_rect().right_bottom());
+        let body_rect = viewer_body_rect(
+            egui::pos2(root_rect.left(), filmstrip_rect.bottom() + 1.0),
+            root_rect.right_bottom(),
+        );
         ui.allocate_rect(body_rect, egui::Sense::hover());
         let body_size = body_rect.size();
         let panel_rect = egui::Rect::from_min_size(
@@ -144,12 +154,8 @@ impl ViewerState {
         );
     }
 
-    fn show_filmstrip(&mut self, ui: &mut egui::Ui) {
-        let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(width, VIEWER_FILMSTRIP_HEIGHT),
-            egui::Sense::hover(),
-        );
+    fn show_filmstrip(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        ui.allocate_rect(rect, egui::Sense::hover());
         ui.painter().rect_filled(rect, 0.0, VIEWER_BG);
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(4.0)), |ui| {
             ui.horizontal(|ui| {
@@ -415,6 +421,13 @@ pub fn viewer_body_rect(top_left: egui::Pos2, bottom_right: egui::Pos2) -> egui:
     )
 }
 
+pub fn viewer_filmstrip_rect(root_rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_size(
+        root_rect.min,
+        Vec2::new(root_rect.width(), VIEWER_FILMSTRIP_HEIGHT),
+    )
+}
+
 pub fn viewer_root_size(content_rect: egui::Rect) -> Vec2 {
     content_rect.size()
 }
@@ -540,6 +553,15 @@ mod tests {
         let body = viewer_body_rect(egui::pos2(0.0, 70.0), egui::pos2(1920.0, 1040.0));
 
         assert_eq!(body.size(), Vec2::new(1920.0, 970.0));
+    }
+
+    #[test]
+    fn viewer_filmstrip_spans_root_width() {
+        let root = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(1920.0, 1040.0));
+        let filmstrip = viewer_filmstrip_rect(root);
+
+        assert_eq!(filmstrip.width(), 1920.0);
+        assert_eq!(filmstrip.height(), VIEWER_FILMSTRIP_HEIGHT);
     }
 
     #[test]

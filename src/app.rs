@@ -708,12 +708,15 @@ impl eframe::App for MyCasaApp {
             let content_rect = ctx.content_rect();
             egui::Area::new("viewer_fullscreen_area".into())
                 .fixed_pos(content_rect.min)
+                .default_size(viewer_root_size(content_rect))
+                .movable(false)
+                .constrain_to(content_rect)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     let root_size = viewer_root_size(content_rect);
                     ui.set_min_size(root_size);
                     ui.set_max_size(root_size);
-                    self.viewer.show_embedded(ctx, ui);
+                    self.viewer.show_embedded_in_rect(ctx, ui, content_rect);
                 });
         } else {
             egui::TopBottomPanel::top("picasa_top_chrome")
