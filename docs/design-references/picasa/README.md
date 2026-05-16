@@ -21,3 +21,8 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - Bande bleue de statut au-dessus du tray bas.
 - Tray bas pour selection et actions rapides : Album Web, E-mail, Imprimer, Exporter.
 - Vue edition/viewer avec grand canevas image et panneau outil lateral.
+
+## Etat MyCasa
+- Chrome phototheque Picasa-like : menu, toolbar, sidebar, lightbox, tray bas.
+- Volet Personnes droit minimal pour retrouver la composition Picasa 3 large.
+- Bande bleue de statut au-dessus du tray bas.

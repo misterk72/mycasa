@@ -580,11 +580,47 @@ impl MyCasaApp {
         );
     }
 
+    fn ui_people_panel(&mut self, ui: &mut egui::Ui) {
+        ui.visuals_mut().widgets.noninteractive.bg_fill = PANEL_BG;
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Personnes")
+                    .strong()
+                    .color(Color32::from_gray(70)),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let _ = ui.small_button("⚙");
+            });
+        });
+        ui.separator();
+        ui.label(RichText::new("Les personnes qui apparaissent dans les photos selectionnees seront repertoriees ici.").color(Color32::from_gray(105)));
+        ui.add_space(8.0);
+        if let Some(photo_id) = self.selected_photo {
+            if let Some(photo) = self.photos.iter().find(|photo| photo.id == photo_id) {
+                ui.label(RichText::new("Photo selectionnee").strong());
+                ui.label(photo.path.display().to_string());
+                if photo.picasa_face_count > 0 {
+                    ui.label(format!("{} visage(s) Picasa", photo.picasa_face_count));
+                } else {
+                    ui.label("Aucun visage detecte dans le catalogue");
+                }
+            }
+        } else {
+            ui.label("Aucune photo selectionnee");
+        }
+    }
+
     fn ui_bottom_tray(&mut self, ui: &mut egui::Ui) {
         let metrics = self.thumbnails.metrics();
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, Color32::from_rgb(238, 240, 242));
         ui.vertical(|ui| {
+            let strip_rect = egui::Rect::from_min_size(
+                ui.min_rect().min,
+                Vec2::new(ui.available_width(), 5.0),
+            );
+            ui.painter().rect_filled(strip_rect, 0.0, PICASA_BLUE);
+            ui.add_space(7.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&self.status).color(Color32::from_gray(55)));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -642,8 +678,14 @@ impl eframe::App for MyCasaApp {
             .frame(egui::Frame::default().fill(PANEL_BG))
             .show(ctx, |ui| self.ui_sidebar(ui));
 
+        egui::SidePanel::right("people_panel")
+            .resizable(true)
+            .default_width(190.0)
+            .frame(egui::Frame::default().fill(PANEL_BG))
+            .show(ctx, |ui| self.ui_people_panel(ui));
+
         egui::TopBottomPanel::bottom("picasa_bottom_tray")
-            .exact_height(86.0)
+            .exact_height(92.0)
             .show(ctx, |ui| self.ui_bottom_tray(ui));
 
         egui::CentralPanel::default()
