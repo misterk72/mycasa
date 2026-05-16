@@ -121,16 +121,17 @@ impl ViewerState {
             .frame(egui::Frame::default().fill(VIEWER_BG))
             .show(ctx, |ui| {
                 apply_viewer_visuals(ui);
-                ui.allocate_ui_with_layout(
-                    ui.available_size_before_wrap(),
-                    Layout::top_down(Align::Center),
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(ui.max_rect())
+                        .layout(Layout::top_down(Align::Center)),
                     |ui| {
-                        let stage_size = ui.available_size_before_wrap();
+                        let stage_size = viewer_panel_stage_size(ui.max_rect());
                         self.show_image(ui, stage_size);
+                        ui.separator();
+                        self.show_metadata(ui, &photo);
                     },
                 );
-                ui.separator();
-                self.show_metadata(ui, &photo);
             });
     }
 
@@ -384,6 +385,10 @@ pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
     Vec2::new(available.x.max(VIEWER_MIN_CANVAS_WIDTH), height)
 }
 
+pub fn viewer_panel_stage_size(panel_rect: egui::Rect) -> Vec2 {
+    panel_rect.size()
+}
+
 #[cfg(test)]
 pub fn viewer_stage_size(total: Vec2) -> Vec2 {
     Vec2::new(
@@ -518,6 +523,13 @@ mod tests {
         let canvas = viewer_canvas_size(Vec2::new(1680.0, 960.0));
 
         assert_eq!(canvas, Vec2::new(1680.0, 916.0));
+    }
+
+    #[test]
+    fn viewer_panel_stage_size_uses_max_rect_size() {
+        let panel = egui::Rect::from_min_size(egui::pos2(210.0, 34.0), Vec2::new(1490.0, 900.0));
+
+        assert_eq!(viewer_panel_stage_size(panel), Vec2::new(1490.0, 900.0));
     }
 
     #[test]
