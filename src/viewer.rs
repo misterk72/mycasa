@@ -30,6 +30,9 @@ const VIEWER_IMAGE_MAX_EDGE: u32 = 1600;
 const VIEWER_METADATA_HEIGHT: f32 = 44.0;
 const VIEWER_MIN_CANVAS_HEIGHT: f32 = 240.0;
 const VIEWER_MIN_CANVAS_WIDTH: f32 = 680.0;
+const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
+const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
+const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
 #[cfg(test)]
 const VIEWER_PANEL_GAP: f32 = 8.0;
 
@@ -140,10 +143,22 @@ impl ViewerState {
         ui.painter().rect_filled(rect, 0.0, VIEWER_BG);
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(4.0)), |ui| {
             ui.horizontal(|ui| {
-                if ui.button("← Phototheque").clicked() {
+                if ui
+                    .add_sized(
+                        Vec2::new(100.0, VIEWER_NAV_BUTTON_HEIGHT),
+                        viewer_button("← Phototheque"),
+                    )
+                    .clicked()
+                {
                     self.close();
                 }
-                if ui.button("▶ Diaporama").clicked() {
+                if ui
+                    .add_sized(
+                        Vec2::new(92.0, VIEWER_NAV_BUTTON_HEIGHT),
+                        viewer_button("▶ Diaporama"),
+                    )
+                    .clicked()
+                {
                     self.zoom = 1.0;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -186,7 +201,7 @@ impl ViewerState {
                     .show(ui, |ui| {
                         for (index, tool) in tools.iter().enumerate() {
                             if ui
-                                .add_sized(Vec2::new(96.0, 23.0), egui::Button::new(*tool))
+                                .add_sized(viewer_tool_button_size(), viewer_button(*tool))
                                 .clicked()
                             {
                                 self.zoom = 1.0;
@@ -198,11 +213,23 @@ impl ViewerState {
                     });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("- Zoom").clicked() {
+                    if ui
+                        .add_sized(
+                            Vec2::new(48.0, VIEWER_NAV_BUTTON_HEIGHT),
+                            viewer_button("- Zoom"),
+                        )
+                        .clicked()
+                    {
                         self.zoom = adjusted_zoom(self.zoom, -VIEWER_ZOOM_STEP);
                     }
                     ui.label(format!("{:.0}%", self.zoom * 100.0));
-                    if ui.button("+ Zoom").clicked() {
+                    if ui
+                        .add_sized(
+                            Vec2::new(54.0, VIEWER_NAV_BUTTON_HEIGHT),
+                            viewer_button("+ Zoom"),
+                        )
+                        .clicked()
+                    {
                         self.zoom = adjusted_zoom(self.zoom, VIEWER_ZOOM_STEP);
                     }
                 });
@@ -389,6 +416,17 @@ pub fn viewer_panel_stage_size(panel_rect: egui::Rect) -> Vec2 {
     panel_rect.size()
 }
 
+pub fn viewer_tool_button_size() -> Vec2 {
+    Vec2::new(VIEWER_TOOL_BUTTON_WIDTH, VIEWER_TOOL_BUTTON_HEIGHT)
+}
+
+fn viewer_button(label: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(label).color(Color32::from_rgb(43, 48, 52)))
+        .fill(VIEWER_BUTTON_BG)
+        .stroke(Stroke::new(1.0, VIEWER_BUTTON_STROKE))
+        .corner_radius(2.0)
+}
+
 #[cfg(test)]
 pub fn viewer_stage_size(total: Vec2) -> Vec2 {
     Vec2::new(
@@ -489,6 +527,15 @@ mod tests {
     #[test]
     fn viewer_tool_panel_width_matches_reference_layout() {
         assert_eq!(VIEWER_TOOL_PANEL_WIDTH, 210.0);
+    }
+
+    #[test]
+    fn viewer_tool_button_size_matches_two_column_panel() {
+        assert_eq!(
+            viewer_tool_button_size(),
+            Vec2::new(VIEWER_TOOL_BUTTON_WIDTH, VIEWER_TOOL_BUTTON_HEIGHT)
+        );
+        assert!(viewer_tool_button_size().x * 2.0 < VIEWER_TOOL_PANEL_WIDTH);
     }
 
     #[test]
