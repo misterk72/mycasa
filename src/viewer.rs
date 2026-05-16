@@ -3,7 +3,9 @@ use std::{
     thread,
 };
 
-use egui::{Align, Color32, ColorImage, Layout, RichText, TextureHandle, TextureOptions, Vec2};
+use egui::{
+    Align, Color32, ColorImage, Layout, RichText, Stroke, TextureHandle, TextureOptions, Vec2,
+};
 
 use crate::catalog::Photo;
 use crate::thumbnails::load_cached_thumbnail_image;
@@ -17,6 +19,9 @@ const VIEWER_FILMSTRIP_HEIGHT: f32 = 34.0;
 const VIEWER_BG: Color32 = Color32::from_rgb(224, 226, 229);
 const VIEWER_PANEL_BG: Color32 = Color32::from_rgb(238, 240, 244);
 const VIEWER_CANVAS_BG: Color32 = Color32::from_rgb(154, 154, 154);
+const VIEWER_BUTTON_BG: Color32 = Color32::from_rgb(244, 246, 249);
+const VIEWER_BUTTON_HOVER_BG: Color32 = Color32::from_rgb(230, 238, 249);
+const VIEWER_BUTTON_STROKE: Color32 = Color32::from_rgb(168, 176, 184);
 const VIEWER_BLUE: Color32 = Color32::from_rgb(86, 132, 199);
 const VIEWER_MIN_ZOOM: f32 = 0.2;
 const VIEWER_MAX_ZOOM: f32 = 4.0;
@@ -90,6 +95,7 @@ impl ViewerState {
             return;
         };
 
+        apply_viewer_visuals(ui);
         self.poll_loaded(ctx);
         self.ensure_loading(ctx, &photo);
         self.show_contents(ui, &photo);
@@ -106,7 +112,8 @@ impl ViewerState {
                 |ui| self.show_tool_panel(ui),
             );
             ui.separator();
-            ui.vertical(|ui| {
+            let image_panel_size = ui.available_size_before_wrap();
+            ui.allocate_ui_with_layout(image_panel_size, Layout::top_down(Align::Center), |ui| {
                 self.show_image(ui);
                 ui.separator();
                 self.show_metadata(ui, photo);
@@ -142,53 +149,57 @@ impl ViewerState {
         ui.set_width(VIEWER_TOOL_PANEL_WIDTH);
         let panel_rect = ui.max_rect();
         ui.painter().rect_filled(panel_rect, 0.0, VIEWER_PANEL_BG);
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                let _ = ui.selectable_label(true, RichText::new("Ret. simples").color(VIEWER_BLUE));
-                let _ = ui.selectable_label(false, "Reglages");
-                let _ = ui.selectable_label(false, "Effets");
-            });
-            ui.separator();
-            ui.label(RichText::new("Retouches courantes").strong());
-            let tools = [
-                "Recadrer",
-                "Redresser",
-                "Yeux rouges",
-                "J'ai de la chance",
-                "Contraste auto",
-                "Couleur auto",
-                "Retoucher",
-                "Texte",
-            ];
-            egui::Grid::new("viewer-basic-tools")
-                .num_columns(2)
-                .spacing(Vec2::new(5.0, 5.0))
-                .show(ui, |ui| {
-                    for (index, tool) in tools.iter().enumerate() {
-                        if ui
-                            .add_sized(Vec2::new(96.0, 23.0), egui::Button::new(*tool))
-                            .clicked()
-                        {
-                            self.zoom = 1.0;
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(panel_rect.shrink2(Vec2::new(8.0, 6.0))),
+            |ui| {
+                ui.horizontal(|ui| {
+                    let _ =
+                        ui.selectable_label(true, RichText::new("Ret. simples").color(VIEWER_BLUE));
+                    let _ = ui.selectable_label(false, "Reglages");
+                    let _ = ui.selectable_label(false, "Effets");
+                });
+                ui.separator();
+                ui.label(RichText::new("Retouches courantes").strong());
+                let tools = [
+                    "Recadrer",
+                    "Redresser",
+                    "Yeux rouges",
+                    "J'ai de la chance",
+                    "Contraste auto",
+                    "Couleur auto",
+                    "Retoucher",
+                    "Texte",
+                ];
+                egui::Grid::new("viewer-basic-tools")
+                    .num_columns(2)
+                    .spacing(Vec2::new(5.0, 5.0))
+                    .show(ui, |ui| {
+                        for (index, tool) in tools.iter().enumerate() {
+                            if ui
+                                .add_sized(Vec2::new(96.0, 23.0), egui::Button::new(*tool))
+                                .clicked()
+                            {
+                                self.zoom = 1.0;
+                            }
+                            if index % 2 == 1 {
+                                ui.end_row();
+                            }
                         }
-                        if index % 2 == 1 {
-                            ui.end_row();
-                        }
+                    });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("- Zoom").clicked() {
+                        self.zoom = adjusted_zoom(self.zoom, -VIEWER_ZOOM_STEP);
+                    }
+                    ui.label(format!("{:.0}%", self.zoom * 100.0));
+                    if ui.button("+ Zoom").clicked() {
+                        self.zoom = adjusted_zoom(self.zoom, VIEWER_ZOOM_STEP);
                     }
                 });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui.button("- Zoom").clicked() {
-                    self.zoom = adjusted_zoom(self.zoom, -VIEWER_ZOOM_STEP);
-                }
-                ui.label(format!("{:.0}%", self.zoom * 100.0));
-                if ui.button("+ Zoom").clicked() {
-                    self.zoom = adjusted_zoom(self.zoom, VIEWER_ZOOM_STEP);
-                }
-            });
-            ui.add_space(10.0);
-            ui.label(RichText::new("Histogramme et infos").color(Color32::from_gray(95)));
-        });
+                ui.add_space(10.0);
+                ui.label(RichText::new("Histogramme et infos").color(Color32::from_gray(95)));
+            },
+        );
     }
 
     fn show_metadata(&self, ui: &mut egui::Ui, photo: &Photo) {
@@ -374,6 +385,20 @@ pub fn viewer_canvas_size(available: Vec2, image_size: Option<Vec2>) -> Vec2 {
     };
 
     Vec2::new(width, height)
+}
+
+fn apply_viewer_visuals(ui: &mut egui::Ui) {
+    let visuals = ui.visuals_mut();
+    visuals.override_text_color = Some(Color32::from_rgb(54, 58, 62));
+    visuals.widgets.inactive.bg_fill = VIEWER_BUTTON_BG;
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(54, 58, 62));
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, VIEWER_BUTTON_STROKE);
+    visuals.widgets.hovered.bg_fill = VIEWER_BUTTON_HOVER_BG;
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::from_rgb(40, 44, 48));
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, VIEWER_BLUE);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(211, 225, 244);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::from_rgb(30, 42, 54));
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, VIEWER_BLUE);
 }
 
 #[cfg(test)]
