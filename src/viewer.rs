@@ -30,6 +30,8 @@ const VIEWER_IMAGE_MAX_EDGE: u32 = 1600;
 const VIEWER_METADATA_HEIGHT: f32 = 44.0;
 const VIEWER_MIN_CANVAS_HEIGHT: f32 = 240.0;
 const VIEWER_MIN_CANVAS_WIDTH: f32 = 680.0;
+const VIEWER_IMAGE_MARGIN: f32 = 16.0;
+const VIEWER_MATTE_PADDING: f32 = 8.0;
 const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
 const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
@@ -365,10 +367,8 @@ impl ViewerState {
 
         if let Some(texture) = self.visible_texture() {
             let image_size = texture.size_vec2();
-            let scale = (rect.width() / image_size.x).min(rect.height() / image_size.y) * self.zoom;
-            let fitted_size = image_size * scale;
-            let image_rect = egui::Rect::from_center_size(rect.center(), fitted_size);
-            let matte_rect = image_rect.expand(8.0);
+            let image_rect = viewer_image_rect(rect, image_size, self.zoom);
+            let matte_rect = image_rect.expand(VIEWER_MATTE_PADDING);
             ui.painter()
                 .rect_filled(matte_rect, 0.0, Color32::from_rgb(224, 224, 220));
             ui.painter().rect_stroke(
@@ -410,6 +410,22 @@ pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
         .min(available.y.max(VIEWER_MIN_CANVAS_HEIGHT));
 
     Vec2::new(available.x.max(VIEWER_MIN_CANVAS_WIDTH), height)
+}
+
+pub fn viewer_image_rect(canvas_rect: egui::Rect, image_size: Vec2, zoom: f32) -> egui::Rect {
+    if image_size.x <= 0.0 || image_size.y <= 0.0 {
+        return egui::Rect::from_center_size(canvas_rect.center(), Vec2::ZERO);
+    }
+
+    let reserved_margin = (VIEWER_IMAGE_MARGIN + VIEWER_MATTE_PADDING) * 2.0;
+    let fit_size = Vec2::new(
+        (canvas_rect.width() - reserved_margin).max(1.0),
+        (canvas_rect.height() - reserved_margin).max(1.0),
+    );
+    let fit_scale = (fit_size.x / image_size.x).min(fit_size.y / image_size.y);
+    let fitted_size = image_size * fit_scale * zoom;
+
+    egui::Rect::from_center_size(canvas_rect.center(), fitted_size)
 }
 
 pub fn viewer_panel_stage_size(panel_rect: egui::Rect) -> Vec2 {
@@ -570,6 +586,40 @@ mod tests {
         let canvas = viewer_canvas_size(Vec2::new(1680.0, 960.0));
 
         assert_eq!(canvas, Vec2::new(1680.0, 916.0));
+    }
+
+    #[test]
+    fn viewer_image_rect_keeps_margin_for_landscape_images() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1680.0, 916.0));
+        let image = viewer_image_rect(canvas, Vec2::new(4032.0, 2268.0), 1.0);
+        let matte = image.expand(VIEWER_MATTE_PADDING);
+
+        assert!(matte.left() >= canvas.left() + VIEWER_IMAGE_MARGIN - 0.1);
+        assert!(matte.right() <= canvas.right() - VIEWER_IMAGE_MARGIN + 0.1);
+        assert!(matte.top() > canvas.top());
+        assert!(matte.bottom() < canvas.bottom());
+    }
+
+    #[test]
+    fn viewer_image_rect_keeps_margin_for_portrait_images() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1680.0, 916.0));
+        let image = viewer_image_rect(canvas, Vec2::new(2268.0, 4032.0), 1.0);
+        let matte = image.expand(VIEWER_MATTE_PADDING);
+
+        assert!(matte.top() >= canvas.top() + VIEWER_IMAGE_MARGIN - 0.1);
+        assert!(matte.bottom() <= canvas.bottom() - VIEWER_IMAGE_MARGIN + 0.1);
+        assert!((image.center().x - canvas.center().x).abs() < 0.1);
+        assert!((image.center().y - canvas.center().y).abs() < 0.1);
+    }
+
+    #[test]
+    fn viewer_image_rect_zoom_can_expand_from_fit_size() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1000.0, 800.0));
+        let fit = viewer_image_rect(canvas, Vec2::new(1000.0, 500.0), 1.0);
+        let zoomed = viewer_image_rect(canvas, Vec2::new(1000.0, 500.0), 2.0);
+
+        assert!(zoomed.width() > fit.width());
+        assert_eq!(zoomed.center(), fit.center());
     }
 
     #[test]
