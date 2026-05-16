@@ -23,6 +23,10 @@ const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 34.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+const PICASA_BLUE: Color32 = Color32::from_rgb(59, 139, 190);
+const PANEL_BG: Color32 = Color32::from_rgb(237, 239, 242);
+const LIGHTBOX_BG: Color32 = Color32::from_rgb(246, 246, 244);
+const TILE_SHADOW: Color32 = Color32::from_rgb(184, 184, 184);
 
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
@@ -109,6 +113,31 @@ impl MyCasaApp {
         }
 
         self.indexer.scan_folder(folder);
+    }
+
+    fn pick_folder_and_scan(&mut self) {
+        match rfd::FileDialog::new()
+            .set_title("Ajouter un dossier photo")
+            .pick_folder()
+        {
+            Some(path) => {
+                add_folder_once(&mut self.folders, path.clone());
+                self.start_scan_folder(path);
+            }
+            None => {
+                self.status = "Selection de dossier annulee".to_owned();
+            }
+        }
+    }
+
+    fn scan_current_dir(&mut self) {
+        match std::env::current_dir() {
+            Ok(path) => {
+                add_folder_once(&mut self.folders, path.clone());
+                self.start_scan_folder(path);
+            }
+            Err(error) => self.status = format!("Dossier courant introuvable: {error}"),
+        }
     }
 
     fn load_more_photos(&mut self) {
@@ -215,24 +244,53 @@ impl MyCasaApp {
     }
 
     fn ui_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.heading("MyCasa");
+        ui.visuals_mut().widgets.noninteractive.bg_fill = PANEL_BG;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Phototheque")
+                    .strong()
+                    .color(Color32::from_gray(70)),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let _ = ui.small_button("+");
+            });
+        });
+        ui.separator();
+
+        egui::CollapsingHeader::new(format!("Albums ({})", self.albums.len()))
+            .default_open(true)
+            .show(ui, |ui| {
+                for album in &self.albums {
+                    let _ = ui.selectable_label(album == "Toutes les photos", album);
+                }
+            });
+
+        egui::CollapsingHeader::new(format!("Dossiers ({})", self.folders.len()))
+            .default_open(true)
+            .show(ui, |ui| {
+                if self.folders.is_empty() {
+                    ui.label("Aucun dossier indexe");
+                } else {
+                    for folder in self.folders.clone() {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("📁").size(14.0));
+                            let folder_name = folder
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or_else(|| folder.to_str().unwrap_or("Dossier"));
+                            if ui.selectable_label(false, folder_name).clicked() {
+                                self.start_scan_folder(folder.clone());
+                            }
+                        });
+                    }
+                }
+            });
+
         ui.add_space(8.0);
-
-        if ui.button("Ajouter un dossier").clicked() {
-            match rfd::FileDialog::new()
-                .set_title("Ajouter un dossier photo")
-                .pick_folder()
-            {
-                Some(path) => {
-                    add_folder_once(&mut self.folders, path.clone());
-                    self.start_scan_folder(path);
-                }
-                None => {
-                    self.status = "Selection de dossier annulee".to_owned();
-                }
-            }
+        if ui.button("Gestionnaire de dossiers").clicked() {
+            self.pick_folder_and_scan();
         }
-
         if ui.button("Charger dossiers Picasa").clicked() {
             let picasa_folders = crate::picasa_db::load_watched_folders();
             let picasa_contacts = crate::picasa_db::load_contacts();
@@ -247,58 +305,96 @@ impl MyCasaApp {
                 picasa_contacts.len()
             );
         }
+    }
 
-        if ui.button("Scanner le dossier courant").clicked() {
-            match std::env::current_dir() {
-                Ok(path) => {
-                    add_folder_once(&mut self.folders, path.clone());
-                    self.start_scan_folder(path);
+    fn ui_top_chrome(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for label in [
+                "Fichier",
+                "Edition",
+                "Affichage",
+                "Dossier",
+                "Photo",
+                "Creation",
+                "Outils",
+                "Aide",
+            ] {
+                ui.label(RichText::new(label).size(13.0));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.hyperlink_to("Connexion aux albums Web", "https://picasa.google.com/");
+            });
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui.button("📷 Importer").clicked() {
+                self.pick_folder_and_scan();
+            }
+            if ui.button("▶ Diaporama").clicked() {
+                self.status = "Diaporama: a implementer".to_owned();
+            }
+            if ui.button("🕘 Chronologie").clicked() {
+                self.status = "Chronologie: a implementer".to_owned();
+            }
+            if ui.button("💿 CD cadeau").clicked() {
+                self.status = "CD cadeau: a implementer".to_owned();
+            }
+            if ui.button("Scanner dossier courant").clicked() {
+                self.scan_current_dir();
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let response = ui.add_sized(
+                    [260.0, 22.0],
+                    egui::TextEdit::singleline(&mut self.search).hint_text("Rechercher"),
+                );
+                if response.changed() {
+                    self.search_debouncer.mark_changed(Instant::now());
                 }
-                Err(error) => self.status = format!("Dossier courant introuvable: {error}"),
-            }
-        }
+                if ui.button("🔍").clicked() {
+                    self.refresh_photos();
+                }
+            });
+        });
+    }
 
-        ui.separator();
-        ui.label(RichText::new("Dossiers").strong());
-        if self.folders.is_empty() {
-            ui.label("Aucun dossier indexe");
-        } else {
-            for folder in self.folders.clone() {
-                ui.horizontal(|ui| {
-                    if ui.small_button("Scanner").clicked() {
-                        self.start_scan_folder(folder.clone());
-                    }
-                    ui.label(folder.display().to_string());
-                });
-            }
-        }
-
-        ui.separator();
-        ui.label(RichText::new("Albums").strong());
-        for album in &self.albums {
-            let _ = ui.selectable_label(album == "Toutes les photos", album);
-        }
+    fn ui_collection_header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("📁").size(28.0));
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("Phototheque")
+                        .size(22.0)
+                        .color(Color32::from_rgb(174, 112, 45)),
+                );
+                ui.label(
+                    RichText::new(format!("{} photo(s) affichee(s)", self.photos.len()))
+                        .color(Color32::from_gray(95)),
+                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Charger plus").clicked() {
+                    self.load_more_photos();
+                }
+                ui.label(format!("limite {}", self.photo_limit));
+            });
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new("Ajouter une description").color(Color32::from_gray(170)));
+        ui.add_space(10.0);
     }
 
     fn ui_top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("Recherche");
-            let response = ui.text_edit_singleline(&mut self.search);
-            if response.changed() {
-                self.search_debouncer.mark_changed(Instant::now());
+            ui.label(RichText::new("Petites vignettes").color(Color32::from_gray(100)));
+            ui.label(
+                RichText::new("Vignettes normales")
+                    .strong()
+                    .color(PICASA_BLUE),
+            );
+            ui.label(RichText::new("Centre de retouche").color(Color32::from_gray(100)));
+            if ui.button("Actualiser").clicked() {
+                self.refresh_photos();
             }
-
-            if ui.button("Charger plus").clicked() {
-                self.load_more_photos();
-            }
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(format!(
-                    "{} photo(s) affichee(s), limite {}",
-                    self.photos.len(),
-                    self.photo_limit
-                ));
-            });
         });
     }
 
@@ -399,18 +495,27 @@ impl MyCasaApp {
         }
 
         let fill = if selected {
-            Color32::from_rgb(64, 95, 145)
+            Color32::from_rgb(232, 242, 255)
         } else if response.hovered() {
-            Color32::from_rgb(46, 50, 58)
+            Color32::from_rgb(248, 252, 255)
         } else {
-            Color32::from_rgb(34, 37, 43)
+            Color32::WHITE
         };
 
-        ui.painter().rect_filled(rect, 6.0, fill);
+        let shadow_rect = rect.translate(Vec2::new(2.0, 2.0));
+        ui.painter().rect_filled(shadow_rect, 2.0, TILE_SHADOW);
+        ui.painter().rect_filled(rect, 2.0, fill);
         ui.painter().rect_stroke(
             rect,
-            6.0,
-            Stroke::new(1.0, Color32::from_rgb(68, 74, 84)),
+            2.0,
+            Stroke::new(
+                if selected { 2.0 } else { 1.0 },
+                if selected {
+                    PICASA_BLUE
+                } else {
+                    Color32::from_rgb(204, 204, 204)
+                },
+            ),
             egui::StrokeKind::Inside,
         );
 
@@ -422,13 +527,13 @@ impl MyCasaApp {
         match self.thumbnails.state_for(ui.ctx(), photo) {
             ThumbnailState::Pending => {
                 ui.painter()
-                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(24, 26, 31));
+                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(235, 235, 232));
                 ui.painter().text(
                     thumb_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "miniature",
                     egui::TextStyle::Small.resolve(ui.style()),
-                    Color32::from_gray(150),
+                    Color32::from_gray(135),
                 );
             }
             ThumbnailState::Ready(texture) => {
@@ -439,7 +544,7 @@ impl MyCasaApp {
                 let fitted_size = image_size * scale;
                 let image_rect = egui::Rect::from_center_size(thumb_rect.center(), fitted_size);
                 ui.painter()
-                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(20, 22, 26));
+                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(246, 246, 244));
                 ui.painter().image(
                     texture.id(),
                     image_rect,
@@ -449,7 +554,7 @@ impl MyCasaApp {
             }
             ThumbnailState::Unavailable => {
                 ui.painter()
-                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(29, 26, 28));
+                    .rect_filled(thumb_rect, 4.0, Color32::from_rgb(242, 232, 232));
                 ui.painter().text(
                     thumb_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -471,8 +576,51 @@ impl MyCasaApp {
             egui::Align2::CENTER_CENTER,
             label,
             egui::TextStyle::Small.resolve(ui.style()),
-            Color32::from_gray(220),
+            Color32::from_gray(55),
         );
+    }
+
+    fn ui_bottom_tray(&mut self, ui: &mut egui::Ui) {
+        let metrics = self.thumbnails.metrics();
+        ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, Color32::from_rgb(238, 240, 242));
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&self.status).color(Color32::from_gray(55)));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(format!(
+                        "{} photos | cache:{} gen:{} fail:{} evict:{} pending:{} active:{} ready:{} scans:{} dbq:{} fps:{:.0}",
+                        self.photos.len(),
+                        metrics.cache_hits,
+                        metrics.generated,
+                        metrics.failed,
+                        metrics.evicted,
+                        metrics.pending,
+                        metrics.active_loads,
+                        metrics.ready,
+                        self.active_scan_folders.len(),
+                        self.pending_catalog_writes.len(),
+                        self.displayed_fps
+                    ));
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(RichText::new("Dossier selectionne").color(PICASA_BLUE).strong());
+                ui.add_space(120.0);
+                for label in ["Album Web", "E-mail", "Imprimer", "Commander", "BlogThis!", "Montage", "Exporter"] {
+                    if ui.button(label).clicked() {
+                        self.status = format!("{label}: a implementer");
+                    }
+                }
+                if let Ok(catalog) = &self.catalog {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(catalog.path().display().to_string());
+                    });
+                }
+            });
+        });
     }
 }
 
@@ -484,42 +632,28 @@ impl eframe::App for MyCasaApp {
             self.refresh_photos();
         }
 
+        egui::TopBottomPanel::top("picasa_top_chrome")
+            .exact_height(64.0)
+            .show(ctx, |ui| self.ui_top_chrome(ui));
+
         egui::SidePanel::left("sidebar")
             .resizable(true)
-            .default_width(230.0)
+            .default_width(220.0)
+            .frame(egui::Frame::default().fill(PANEL_BG))
             .show(ctx, |ui| self.ui_sidebar(ui));
 
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(&self.status);
-                let metrics = self.thumbnails.metrics();
-                ui.separator();
-                ui.label(format!(
-                    "thumbs cache:{} gen:{} fail:{} evict:{} pending:{} active:{} ready:{} scans:{} dbq:{} fps:{:.0}",
-                    metrics.cache_hits,
-                    metrics.generated,
-                    metrics.failed,
-                    metrics.evicted,
-                    metrics.pending,
-                    metrics.active_loads,
-                    metrics.ready,
-                    self.active_scan_folders.len(),
-                    self.pending_catalog_writes.len(),
-                    self.displayed_fps
-                ));
-                if let Ok(catalog) = &self.catalog {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(catalog.path().display().to_string());
-                    });
-                }
-            });
-        });
+        egui::TopBottomPanel::bottom("picasa_bottom_tray")
+            .exact_height(86.0)
+            .show(ctx, |ui| self.ui_bottom_tray(ui));
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.ui_top_bar(ui);
-            ui.separator();
-            self.ui_grid(ui);
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(LIGHTBOX_BG))
+            .show(ctx, |ui| {
+                self.ui_collection_header(ui);
+                self.ui_top_bar(ui);
+                ui.separator();
+                self.ui_grid(ui);
+            });
 
         self.handle_viewer_keyboard(ctx);
         self.preload_viewer_neighbors(ctx);
