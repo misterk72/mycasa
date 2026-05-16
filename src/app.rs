@@ -450,6 +450,11 @@ impl MyCasaApp {
             return;
         };
 
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.viewer.close();
+            return;
+        }
+
         let direction = ctx.input(|input| {
             if input.key_pressed(egui::Key::ArrowLeft) {
                 Some(NavigationDirection::Previous)

@@ -18,6 +18,12 @@ const VIEWER_BG: Color32 = Color32::from_rgb(224, 226, 229);
 const VIEWER_PANEL_BG: Color32 = Color32::from_rgb(238, 240, 244);
 const VIEWER_CANVAS_BG: Color32 = Color32::from_rgb(154, 154, 154);
 const VIEWER_BLUE: Color32 = Color32::from_rgb(86, 132, 199);
+const VIEWER_MIN_ZOOM: f32 = 0.2;
+const VIEWER_MAX_ZOOM: f32 = 4.0;
+const VIEWER_ZOOM_STEP: f32 = 0.1;
+const VIEWER_IMAGE_MAX_EDGE: u32 = 1600;
+const VIEWER_METADATA_HEIGHT: f32 = 44.0;
+const VIEWER_MIN_CANVAS_HEIGHT: f32 = 500.0;
 
 #[derive(Clone, Copy)]
 pub enum NavigationDirection {
@@ -62,7 +68,7 @@ impl ViewerState {
         self.current.as_ref().map(|photo| photo.id)
     }
 
-    fn close(&mut self) {
+    pub fn close(&mut self) {
         self.current = None;
         self.receiver = None;
         self.loading = false;
@@ -133,7 +139,7 @@ impl ViewerState {
             });
             ui.separator();
             ui.label(RichText::new("Retouches courantes").strong());
-            for tool in [
+            let tools = [
                 "Recadrer",
                 "Redresser",
                 "Yeux rouges",
@@ -142,19 +148,31 @@ impl ViewerState {
                 "Couleur auto",
                 "Retoucher",
                 "Texte",
-            ] {
-                if ui.button(tool).clicked() {
-                    self.zoom = 1.0;
-                }
-            }
+            ];
+            egui::Grid::new("viewer-basic-tools")
+                .num_columns(2)
+                .spacing(Vec2::new(5.0, 5.0))
+                .show(ui, |ui| {
+                    for (index, tool) in tools.iter().enumerate() {
+                        if ui
+                            .add_sized(Vec2::new(96.0, 23.0), egui::Button::new(*tool))
+                            .clicked()
+                        {
+                            self.zoom = 1.0;
+                        }
+                        if index % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
+                });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui.button("- Zoom").clicked() {
-                    self.zoom = (self.zoom - 0.1).max(0.2);
+                    self.zoom = adjusted_zoom(self.zoom, -VIEWER_ZOOM_STEP);
                 }
                 ui.label(format!("{:.0}%", self.zoom * 100.0));
                 if ui.button("+ Zoom").clicked() {
-                    self.zoom = (self.zoom + 0.1).min(4.0);
+                    self.zoom = adjusted_zoom(self.zoom, VIEWER_ZOOM_STEP);
                 }
             });
             ui.add_space(10.0);
@@ -163,21 +181,43 @@ impl ViewerState {
     }
 
     fn show_metadata(&self, ui: &mut egui::Ui, photo: &Photo) {
-        ui.horizontal(|ui| {
-            ui.label(photo.path.display().to_string());
-            if let (Some(width), Some(height)) = (photo.width, photo.height) {
-                ui.label(format!("{width} x {height}"));
-            }
-            if let Some(captured_at) = &photo.captured_at {
-                ui.label(captured_at);
-            }
-            if photo.picasa_starred {
-                ui.label("Picasa: favori");
-            }
-            if photo.picasa_face_count > 0 {
-                ui.label(format!("Visages Picasa: {}", photo.picasa_face_count));
-            }
-        });
+        let available = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(available, 36.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 0.0, Color32::from_rgb(232, 235, 238));
+        ui.painter().line_segment(
+            [rect.left_top(), rect.right_top()],
+            egui::Stroke::new(1.0, Color32::from_rgb(84, 126, 157)),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(6.0, 5.0))),
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(photo.path.display().to_string())
+                            .color(Color32::from_gray(85)),
+                    );
+                    if let (Some(width), Some(height)) = (photo.width, photo.height) {
+                        ui.label(
+                            RichText::new(format!("{width} x {height}"))
+                                .color(Color32::from_gray(85)),
+                        );
+                    }
+                    if let Some(captured_at) = &photo.captured_at {
+                        ui.label(RichText::new(captured_at).color(Color32::from_gray(85)));
+                    }
+                    if photo.picasa_starred {
+                        ui.label(RichText::new("Picasa: favori").color(Color32::from_gray(85)));
+                    }
+                    if photo.picasa_face_count > 0 {
+                        ui.label(
+                            RichText::new(format!("Visages Picasa: {}", photo.picasa_face_count))
+                                .color(Color32::from_gray(85)),
+                        );
+                    }
+                });
+            },
+        );
         if let Some(caption) = &photo.picasa_caption {
             ui.label(format!("Legende Picasa: {caption}"));
         }
@@ -260,7 +300,7 @@ impl ViewerState {
 
     fn show_image(&self, ui: &mut egui::Ui) {
         let available = ui.available_size_before_wrap();
-        let viewer_size = Vec2::new(available.x.max(680.0), available.y.clamp(500.0, 760.0));
+        let viewer_size = viewer_canvas_size(available);
         let (rect, _) = ui.allocate_exact_size(viewer_size, egui::Sense::drag());
 
         ui.painter().rect_filled(rect, 0.0, VIEWER_CANVAS_BG);
@@ -302,6 +342,17 @@ impl ViewerState {
     }
 }
 
+pub fn adjusted_zoom(current: f32, delta: f32) -> f32 {
+    (current + delta).clamp(VIEWER_MIN_ZOOM, VIEWER_MAX_ZOOM)
+}
+
+pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
+    Vec2::new(
+        available.x.max(680.0),
+        (available.y - VIEWER_METADATA_HEIGHT).max(VIEWER_MIN_CANVAS_HEIGHT),
+    )
+}
+
 #[cfg(test)]
 pub fn viewer_window_size(width: Option<u32>, height: Option<u32>) -> Vec2 {
     let Some(width) = width.filter(|value| *value > 0) else {
@@ -340,7 +391,7 @@ pub fn adjacent_photo_id(
 fn load_viewer_image(photo: &Photo) -> Option<ColorImage> {
     let image = image::open(&photo.path)
         .ok()?
-        .thumbnail(2048, 2048)
+        .thumbnail(VIEWER_IMAGE_MAX_EDGE, VIEWER_IMAGE_MAX_EDGE)
         .to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.into_raw();
@@ -356,6 +407,33 @@ mod tests {
     #[test]
     fn viewer_tool_panel_width_matches_reference_layout() {
         assert_eq!(VIEWER_TOOL_PANEL_WIDTH, 210.0);
+    }
+
+    #[test]
+    fn close_clears_current_photo() {
+        let mut viewer = ViewerState::default();
+        viewer.open(photo_for_test(42));
+
+        viewer.close();
+
+        assert_eq!(viewer.current_photo_id(), None);
+        assert!(!viewer.is_open());
+    }
+
+    #[test]
+    fn adjusted_zoom_is_bounded() {
+        assert_eq!(adjusted_zoom(1.0, 0.1), 1.1);
+        assert_eq!(adjusted_zoom(0.2, -0.1), VIEWER_MIN_ZOOM);
+        assert_eq!(adjusted_zoom(4.0, 0.1), VIEWER_MAX_ZOOM);
+    }
+
+    #[test]
+    fn viewer_canvas_keeps_room_for_metadata_bar() {
+        let large = viewer_canvas_size(Vec2::new(1200.0, 860.0));
+        let small = viewer_canvas_size(Vec2::new(640.0, 400.0));
+
+        assert_eq!(large, Vec2::new(1200.0, 816.0));
+        assert_eq!(small, Vec2::new(680.0, VIEWER_MIN_CANVAS_HEIGHT));
     }
 
     #[test]
