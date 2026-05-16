@@ -27,3 +27,4 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - Volet Personnes droit minimal pour retrouver la composition Picasa 3 large.
 - Bande bleue de statut au-dessus du tray bas.
 - Viewer edition : panneau outils gauche, filmstrip haut et canevas gris central.
+- Viewer clair : fond gris Picasa, panneau outils pale et image centrale plus grande.

@@ -8,10 +8,14 @@ use egui::{Color32, ColorImage, RichText, TextureHandle, TextureOptions, Vec2};
 use crate::catalog::Photo;
 use crate::thumbnails::load_cached_thumbnail_image;
 
-const VIEWER_MIN_SIZE: Vec2 = Vec2::new(760.0, 520.0);
-const VIEWER_MAX_SIZE: Vec2 = Vec2::new(1180.0, 840.0);
-const VIEWER_TOOL_PANEL_WIDTH: f32 = 214.0;
+const VIEWER_MIN_SIZE: Vec2 = Vec2::new(980.0, 680.0);
+const VIEWER_MAX_SIZE: Vec2 = Vec2::new(1280.0, 880.0);
+const VIEWER_TOOL_PANEL_WIDTH: f32 = 210.0;
 const VIEWER_FILMSTRIP_HEIGHT: f32 = 34.0;
+const VIEWER_BG: Color32 = Color32::from_rgb(224, 226, 229);
+const VIEWER_PANEL_BG: Color32 = Color32::from_rgb(238, 240, 244);
+const VIEWER_CANVAS_BG: Color32 = Color32::from_rgb(154, 154, 154);
+const VIEWER_BLUE: Color32 = Color32::from_rgb(86, 132, 199);
 
 #[derive(Clone, Copy)]
 pub enum NavigationDirection {
@@ -71,9 +75,10 @@ impl ViewerState {
         self.ensure_loading(ctx, &photo);
 
         let mut open = true;
-        egui::Window::new("Viewer")
+        egui::Window::new("Phototheque")
             .open(&mut open)
             .resizable(true)
+            .frame(egui::Frame::window(&ctx.style()).fill(VIEWER_BG))
             .default_size(viewer_window_size(photo.width, photo.height))
             .min_size(VIEWER_MIN_SIZE)
             .vscroll(false)
@@ -97,6 +102,7 @@ impl ViewerState {
     }
 
     fn show_filmstrip(&mut self, ui: &mut egui::Ui) {
+        ui.painter().rect_filled(ui.max_rect(), 0.0, VIEWER_BG);
         ui.horizontal(|ui| {
             if ui.button("← Phototheque").clicked() {
                 self.current = None;
@@ -110,14 +116,16 @@ impl ViewerState {
                 ui.label(RichText::new("◀  ▣ ▣ ▣ ▣  ▶").color(Color32::from_gray(65)));
             });
         });
-        ui.allocate_space(Vec2::new(1.0, VIEWER_FILMSTRIP_HEIGHT.min(4.0)));
+        ui.allocate_space(Vec2::new(1.0, VIEWER_FILMSTRIP_HEIGHT.min(6.0)));
     }
 
     fn show_tool_panel(&mut self, ui: &mut egui::Ui) {
         ui.set_width(VIEWER_TOOL_PANEL_WIDTH);
+        ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, VIEWER_PANEL_BG);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let _ = ui.selectable_label(true, "Ret. simples");
+                let _ = ui.selectable_label(true, RichText::new("Ret. simples").color(VIEWER_BLUE));
                 let _ = ui.selectable_label(false, "Reglages");
                 let _ = ui.selectable_label(false, "Effets");
             });
@@ -250,17 +258,25 @@ impl ViewerState {
 
     fn show_image(&self, ui: &mut egui::Ui) {
         let available = ui.available_size_before_wrap();
-        let viewer_size = Vec2::new(available.x.max(520.0), available.y.clamp(360.0, 720.0));
+        let viewer_size = Vec2::new(available.x.max(680.0), available.y.clamp(500.0, 760.0));
         let (rect, _) = ui.allocate_exact_size(viewer_size, egui::Sense::drag());
 
-        ui.painter()
-            .rect_filled(rect, 0.0, Color32::from_rgb(156, 156, 156));
+        ui.painter().rect_filled(rect, 0.0, VIEWER_CANVAS_BG);
 
         if let Some(texture) = self.visible_texture() {
             let image_size = texture.size_vec2();
             let scale = (rect.width() / image_size.x).min(rect.height() / image_size.y) * self.zoom;
             let fitted_size = image_size * scale;
             let image_rect = egui::Rect::from_center_size(rect.center(), fitted_size);
+            let matte_rect = image_rect.expand(8.0);
+            ui.painter()
+                .rect_filled(matte_rect, 0.0, Color32::from_rgb(224, 224, 220));
+            ui.painter().rect_stroke(
+                matte_rect,
+                0.0,
+                egui::Stroke::new(1.0, Color32::from_rgb(118, 118, 118)),
+                egui::StrokeKind::Inside,
+            );
             ui.painter().image(
                 texture.id(),
                 image_rect,
@@ -286,10 +302,10 @@ impl ViewerState {
 
 pub fn viewer_window_size(width: Option<u32>, height: Option<u32>) -> Vec2 {
     let Some(width) = width.filter(|value| *value > 0) else {
-        return Vec2::new(1060.0, 760.0);
+        return Vec2::new(1180.0, 800.0);
     };
     let Some(height) = height.filter(|value| *value > 0) else {
-        return Vec2::new(1060.0, 760.0);
+        return Vec2::new(1180.0, 800.0);
     };
 
     let aspect = width as f32 / height as f32;
@@ -336,7 +352,7 @@ mod tests {
 
     #[test]
     fn viewer_tool_panel_width_matches_reference_layout() {
-        assert_eq!(VIEWER_TOOL_PANEL_WIDTH, 214.0);
+        assert_eq!(VIEWER_TOOL_PANEL_WIDTH, 210.0);
     }
 
     #[test]
@@ -346,8 +362,9 @@ mod tests {
         let unknown = viewer_window_size(None, None);
 
         assert!(landscape.x > landscape.y);
-        assert!(portrait.y > portrait.x);
-        assert_eq!(unknown, Vec2::new(1060.0, 760.0));
+        assert!(portrait.y >= VIEWER_MIN_SIZE.y);
+        assert!(portrait.x >= VIEWER_MIN_SIZE.x);
+        assert_eq!(unknown, Vec2::new(1180.0, 800.0));
         assert!(landscape.x <= VIEWER_MAX_SIZE.x);
         assert!(portrait.y <= VIEWER_MAX_SIZE.y);
     }
