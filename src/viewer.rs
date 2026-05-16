@@ -415,6 +415,10 @@ pub fn viewer_body_rect(top_left: egui::Pos2, bottom_right: egui::Pos2) -> egui:
     )
 }
 
+pub fn viewer_root_size(content_rect: egui::Rect) -> Vec2 {
+    content_rect.size()
+}
+
 fn apply_viewer_visuals(ui: &mut egui::Ui) {
     let visuals = ui.visuals_mut();
     visuals.override_text_color = Some(Color32::from_rgb(54, 58, 62));
@@ -536,6 +540,13 @@ mod tests {
         let body = viewer_body_rect(egui::pos2(0.0, 70.0), egui::pos2(1920.0, 1040.0));
 
         assert_eq!(body.size(), Vec2::new(1920.0, 970.0));
+    }
+
+    #[test]
+    fn viewer_root_size_matches_content_rect() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(1920.0, 1040.0));
+
+        assert_eq!(viewer_root_size(rect), Vec2::new(1920.0, 1040.0));
     }
 
     #[test]
