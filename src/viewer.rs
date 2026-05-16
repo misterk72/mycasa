@@ -30,6 +30,7 @@ const VIEWER_IMAGE_MAX_EDGE: u32 = 1600;
 const VIEWER_METADATA_HEIGHT: f32 = 44.0;
 const VIEWER_MIN_CANVAS_HEIGHT: f32 = 240.0;
 const VIEWER_MIN_CANVAS_WIDTH: f32 = 680.0;
+#[cfg(test)]
 const VIEWER_PANEL_GAP: f32 = 8.0;
 
 #[derive(Clone, Copy)]
@@ -91,67 +92,46 @@ impl ViewerState {
         self.loading = false;
     }
 
-    pub fn show_embedded_in_rect(
-        &mut self,
-        ctx: &egui::Context,
-        ui: &mut egui::Ui,
-        root_rect: egui::Rect,
-    ) {
+    pub fn show_docked(&mut self, ctx: &egui::Context) {
         let Some(photo) = self.current.clone() else {
             return;
         };
 
-        apply_viewer_visuals(ui);
         self.poll_loaded(ctx);
         self.ensure_loading(ctx, &photo);
-        self.show_contents(ui, &photo, root_rect);
-    }
 
-    fn show_contents(&mut self, ui: &mut egui::Ui, photo: &Photo, root_rect: egui::Rect) {
-        ui.allocate_rect(root_rect, egui::Sense::hover());
-        ui.painter().rect_filled(root_rect, 0.0, VIEWER_BG);
-        let filmstrip_rect = viewer_filmstrip_rect(root_rect);
-        self.show_filmstrip(ui, filmstrip_rect);
+        egui::TopBottomPanel::top("viewer_filmstrip")
+            .exact_height(VIEWER_FILMSTRIP_HEIGHT)
+            .frame(egui::Frame::default().fill(VIEWER_BG))
+            .show(ctx, |ui| {
+                apply_viewer_visuals(ui);
+                self.show_filmstrip(ui, ui.max_rect());
+            });
 
-        let body_rect = viewer_body_rect(
-            egui::pos2(root_rect.left(), filmstrip_rect.bottom() + 1.0),
-            root_rect.right_bottom(),
-        );
-        ui.allocate_rect(body_rect, egui::Sense::hover());
-        let body_size = body_rect.size();
-        let panel_rect = egui::Rect::from_min_size(
-            body_rect.min,
-            Vec2::new(VIEWER_TOOL_PANEL_WIDTH, body_rect.height()),
-        );
-        let stage_size = viewer_stage_size(body_size);
-        let stage_rect = egui::Rect::from_min_size(
-            egui::pos2(panel_rect.right() + VIEWER_PANEL_GAP, body_rect.top()),
-            stage_size,
-        );
+        egui::SidePanel::left("viewer_tools")
+            .resizable(false)
+            .exact_width(VIEWER_TOOL_PANEL_WIDTH)
+            .frame(egui::Frame::default().fill(VIEWER_PANEL_BG))
+            .show(ctx, |ui| {
+                apply_viewer_visuals(ui);
+                self.show_tool_panel(ui);
+            });
 
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(panel_rect)
-                .layout(Layout::top_down(Align::Min)),
-            |ui| self.show_tool_panel(ui),
-        );
-        ui.painter().line_segment(
-            [
-                egui::pos2(panel_rect.right() + 1.0, body_rect.top()),
-                egui::pos2(panel_rect.right() + 1.0, body_rect.bottom()),
-            ],
-            Stroke::new(1.0, Color32::from_rgb(154, 160, 166)),
-        );
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(stage_rect)
-                .layout(Layout::top_down(Align::Center)),
-            |ui| {
-                self.show_image(ui, stage_rect.size());
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(VIEWER_BG))
+            .show(ctx, |ui| {
+                apply_viewer_visuals(ui);
+                ui.allocate_ui_with_layout(
+                    ui.available_size_before_wrap(),
+                    Layout::top_down(Align::Center),
+                    |ui| {
+                        let stage_size = ui.available_size_before_wrap();
+                        self.show_image(ui, stage_size);
+                    },
+                );
                 ui.separator();
-                self.show_metadata(ui, photo);
-            },
-        );
+                self.show_metadata(ui, &photo);
+            });
     }
 
     fn show_filmstrip(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
@@ -404,6 +384,7 @@ pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
     Vec2::new(available.x.max(VIEWER_MIN_CANVAS_WIDTH), height)
 }
 
+#[cfg(test)]
 pub fn viewer_stage_size(total: Vec2) -> Vec2 {
     Vec2::new(
         (total.x - VIEWER_TOOL_PANEL_WIDTH - VIEWER_PANEL_GAP).max(0.0),
@@ -411,6 +392,7 @@ pub fn viewer_stage_size(total: Vec2) -> Vec2 {
     )
 }
 
+#[cfg(test)]
 pub fn viewer_body_rect(top_left: egui::Pos2, bottom_right: egui::Pos2) -> egui::Rect {
     egui::Rect::from_min_max(
         top_left,
@@ -421,6 +403,7 @@ pub fn viewer_body_rect(top_left: egui::Pos2, bottom_right: egui::Pos2) -> egui:
     )
 }
 
+#[cfg(test)]
 pub fn viewer_filmstrip_rect(root_rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_size(
         root_rect.min,
@@ -428,6 +411,7 @@ pub fn viewer_filmstrip_rect(root_rect: egui::Rect) -> egui::Rect {
     )
 }
 
+#[cfg(test)]
 pub fn viewer_root_size(content_rect: egui::Rect) -> Vec2 {
     content_rect.size()
 }

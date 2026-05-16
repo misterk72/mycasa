@@ -15,7 +15,7 @@ use crate::photo_limit::{INITIAL_PHOTO_LIMIT, MAX_PHOTO_LIMIT, next_photo_limit}
 use crate::scan_state::{begin_scan, finish_scan};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
 use crate::ui_text::middle_truncate;
-use crate::viewer::{NavigationDirection, ViewerState, adjacent_photo_id, viewer_root_size};
+use crate::viewer::{NavigationDirection, ViewerState, adjacent_photo_id};
 
 const THUMBNAIL_SIZE: f32 = 132.0;
 const TILE_PADDING: f32 = 8.0;
@@ -702,22 +702,7 @@ impl eframe::App for MyCasaApp {
         }
 
         if self.viewer.is_open() {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(Color32::from_rgb(224, 226, 229)))
-                .show(ctx, |_| {});
-            let content_rect = ctx.content_rect();
-            egui::Area::new("viewer_fullscreen_area".into())
-                .fixed_pos(content_rect.min)
-                .default_size(viewer_root_size(content_rect))
-                .movable(false)
-                .constrain_to(content_rect)
-                .order(egui::Order::Foreground)
-                .show(ctx, |ui| {
-                    let root_size = viewer_root_size(content_rect);
-                    ui.set_min_size(root_size);
-                    ui.set_max_size(root_size);
-                    self.viewer.show_embedded_in_rect(ctx, ui, content_rect);
-                });
+            self.viewer.show_docked(ctx);
         } else {
             egui::TopBottomPanel::top("picasa_top_chrome")
                 .exact_height(60.0)
