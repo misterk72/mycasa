@@ -136,7 +136,7 @@ impl ViewerState {
                 .max_rect(stage_rect)
                 .layout(Layout::top_down(Align::Center)),
             |ui| {
-                self.show_image(ui);
+                self.show_image(ui, stage_rect.size());
                 ui.separator();
                 self.show_metadata(ui, photo);
             },
@@ -342,8 +342,8 @@ impl ViewerState {
         self.full_texture.as_ref().or(self.preview_texture.as_ref())
     }
 
-    fn show_image(&self, ui: &mut egui::Ui) {
-        let available = ui.available_size_before_wrap();
+    fn show_image(&self, ui: &mut egui::Ui, stage_size: Vec2) {
+        let available = stage_size;
         let image_size = self.visible_texture().map(TextureHandle::size_vec2);
         let viewer_size = viewer_canvas_size(available, image_size);
         let (rect, _) = ui.allocate_exact_size(viewer_size, egui::Sense::drag());
@@ -523,6 +523,13 @@ mod tests {
         assert!(portrait.x < landscape.x);
         assert_eq!(landscape.x, 1200.0);
         assert!(portrait.x >= VIEWER_MIN_CANVAS_WIDTH);
+    }
+
+    #[test]
+    fn viewer_canvas_uses_full_stage_width_for_landscape_images() {
+        let canvas = viewer_canvas_size(Vec2::new(1680.0, 960.0), Some(Vec2::new(1600.0, 900.0)));
+
+        assert_eq!(canvas.x, 1680.0);
     }
 
     #[test]
