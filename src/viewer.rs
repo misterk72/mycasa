@@ -3,7 +3,7 @@ use std::{
     thread,
 };
 
-use egui::{Color32, ColorImage, RichText, TextureHandle, TextureOptions, Vec2};
+use egui::{Align, Color32, ColorImage, Layout, RichText, TextureHandle, TextureOptions, Vec2};
 
 use crate::catalog::Photo;
 use crate::thumbnails::load_cached_thumbnail_image;
@@ -23,7 +23,8 @@ const VIEWER_MAX_ZOOM: f32 = 4.0;
 const VIEWER_ZOOM_STEP: f32 = 0.1;
 const VIEWER_IMAGE_MAX_EDGE: u32 = 1600;
 const VIEWER_METADATA_HEIGHT: f32 = 44.0;
-const VIEWER_MIN_CANVAS_HEIGHT: f32 = 500.0;
+const VIEWER_MIN_CANVAS_HEIGHT: f32 = 240.0;
+const VIEWER_MIN_CANVAS_WIDTH: f32 = 680.0;
 
 #[derive(Clone, Copy)]
 pub enum NavigationDirection {
@@ -91,7 +92,6 @@ impl ViewerState {
 
         self.poll_loaded(ctx);
         self.ensure_loading(ctx, &photo);
-        ui.painter().rect_filled(ui.max_rect(), 0.0, VIEWER_BG);
         self.show_contents(ui, &photo);
     }
 
@@ -99,7 +99,12 @@ impl ViewerState {
         self.show_filmstrip(ui);
         ui.separator();
         ui.horizontal(|ui| {
-            self.show_tool_panel(ui);
+            let panel_height = ui.available_height();
+            ui.allocate_ui_with_layout(
+                Vec2::new(VIEWER_TOOL_PANEL_WIDTH, panel_height),
+                Layout::top_down(Align::Min),
+                |ui| self.show_tool_panel(ui),
+            );
             ui.separator();
             ui.vertical(|ui| {
                 self.show_image(ui);
@@ -110,27 +115,33 @@ impl ViewerState {
     }
 
     fn show_filmstrip(&mut self, ui: &mut egui::Ui) {
-        ui.painter().rect_filled(ui.max_rect(), 0.0, VIEWER_BG);
-        ui.horizontal(|ui| {
-            if ui.button("← Phototheque").clicked() {
-                self.close();
-            }
-            if ui.button("▶ Diaporama").clicked() {
-                self.zoom = 1.0;
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new("A+  A-  A/A").color(Color32::from_gray(70)));
-                ui.add_space(12.0);
-                ui.label(RichText::new("◀  ▣ ▣ ▣ ▣  ▶").color(Color32::from_gray(65)));
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(width, VIEWER_FILMSTRIP_HEIGHT),
+            egui::Sense::hover(),
+        );
+        ui.painter().rect_filled(rect, 0.0, VIEWER_BG);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(4.0)), |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("← Phototheque").clicked() {
+                    self.close();
+                }
+                if ui.button("▶ Diaporama").clicked() {
+                    self.zoom = 1.0;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new("A+  A-  A/A").color(Color32::from_gray(70)));
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("◀  ▣ ▣ ▣ ▣  ▶").color(Color32::from_gray(65)));
+                });
             });
         });
-        ui.allocate_space(Vec2::new(1.0, VIEWER_FILMSTRIP_HEIGHT.min(6.0)));
     }
 
     fn show_tool_panel(&mut self, ui: &mut egui::Ui) {
         ui.set_width(VIEWER_TOOL_PANEL_WIDTH);
-        ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, VIEWER_PANEL_BG);
+        let panel_rect = ui.max_rect();
+        ui.painter().rect_filled(panel_rect, 0.0, VIEWER_PANEL_BG);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 let _ = ui.selectable_label(true, RichText::new("Ret. simples").color(VIEWER_BLUE));
@@ -300,7 +311,8 @@ impl ViewerState {
 
     fn show_image(&self, ui: &mut egui::Ui) {
         let available = ui.available_size_before_wrap();
-        let viewer_size = viewer_canvas_size(available);
+        let image_size = self.visible_texture().map(TextureHandle::size_vec2);
+        let viewer_size = viewer_canvas_size(available, image_size);
         let (rect, _) = ui.allocate_exact_size(viewer_size, egui::Sense::drag());
 
         ui.painter().rect_filled(rect, 0.0, VIEWER_CANVAS_BG);
@@ -346,11 +358,22 @@ pub fn adjusted_zoom(current: f32, delta: f32) -> f32 {
     (current + delta).clamp(VIEWER_MIN_ZOOM, VIEWER_MAX_ZOOM)
 }
 
-pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
-    Vec2::new(
-        available.x.max(680.0),
-        (available.y - VIEWER_METADATA_HEIGHT).max(VIEWER_MIN_CANVAS_HEIGHT),
-    )
+pub fn viewer_canvas_size(available: Vec2, image_size: Option<Vec2>) -> Vec2 {
+    let height = (available.y - VIEWER_METADATA_HEIGHT)
+        .max(VIEWER_MIN_CANVAS_HEIGHT)
+        .min(available.y.max(VIEWER_MIN_CANVAS_HEIGHT));
+    let width = match image_size.filter(|size| size.x > 0.0 && size.y > 0.0) {
+        Some(size) if size.y > size.x => {
+            let portrait_width = height * (size.x / size.y) + 280.0;
+            portrait_width.clamp(
+                VIEWER_MIN_CANVAS_WIDTH,
+                available.x.max(VIEWER_MIN_CANVAS_WIDTH),
+            )
+        }
+        _ => available.x.max(VIEWER_MIN_CANVAS_WIDTH),
+    };
+
+    Vec2::new(width, height)
 }
 
 #[cfg(test)]
@@ -429,11 +452,23 @@ mod tests {
 
     #[test]
     fn viewer_canvas_keeps_room_for_metadata_bar() {
-        let large = viewer_canvas_size(Vec2::new(1200.0, 860.0));
-        let small = viewer_canvas_size(Vec2::new(640.0, 400.0));
+        let large = viewer_canvas_size(Vec2::new(1200.0, 860.0), None);
+        let small = viewer_canvas_size(Vec2::new(640.0, 400.0), None);
 
         assert_eq!(large, Vec2::new(1200.0, 816.0));
-        assert_eq!(small, Vec2::new(680.0, VIEWER_MIN_CANVAS_HEIGHT));
+        assert_eq!(small, Vec2::new(680.0, 356.0));
+    }
+
+    #[test]
+    fn viewer_canvas_narrows_for_portrait_images() {
+        let portrait =
+            viewer_canvas_size(Vec2::new(1200.0, 860.0), Some(Vec2::new(1080.0, 1920.0)));
+        let landscape =
+            viewer_canvas_size(Vec2::new(1200.0, 860.0), Some(Vec2::new(1920.0, 1080.0)));
+
+        assert!(portrait.x < landscape.x);
+        assert_eq!(landscape.x, 1200.0);
+        assert!(portrait.x >= VIEWER_MIN_CANVAS_WIDTH);
     }
 
     #[test]
