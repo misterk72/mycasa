@@ -106,8 +106,9 @@ impl ViewerState {
         self.show_filmstrip(ui);
         ui.separator();
 
-        let body_size = ui.available_size_before_wrap();
-        let (body_rect, _) = ui.allocate_exact_size(body_size, egui::Sense::hover());
+        let body_rect = viewer_body_rect(ui.cursor().min, ui.max_rect().right_bottom());
+        ui.allocate_rect(body_rect, egui::Sense::hover());
+        let body_size = body_rect.size();
         let panel_rect = egui::Rect::from_min_size(
             body_rect.min,
             Vec2::new(VIEWER_TOOL_PANEL_WIDTH, body_rect.height()),
@@ -416,6 +417,16 @@ pub fn viewer_stage_size(total: Vec2) -> Vec2 {
     )
 }
 
+pub fn viewer_body_rect(top_left: egui::Pos2, bottom_right: egui::Pos2) -> egui::Rect {
+    egui::Rect::from_min_max(
+        top_left,
+        egui::pos2(
+            bottom_right.x.max(top_left.x),
+            bottom_right.y.max(top_left.y),
+        ),
+    )
+}
+
 fn apply_viewer_visuals(ui: &mut egui::Ui) {
     let visuals = ui.visuals_mut();
     visuals.override_text_color = Some(Color32::from_rgb(54, 58, 62));
@@ -542,6 +553,13 @@ mod tests {
             Vec2::new(1800.0 - VIEWER_TOOL_PANEL_WIDTH - VIEWER_PANEL_GAP, 900.0)
         );
         assert_eq!(narrow, Vec2::new(0.0, 900.0));
+    }
+
+    #[test]
+    fn viewer_body_rect_uses_full_panel_bounds() {
+        let body = viewer_body_rect(egui::pos2(0.0, 70.0), egui::pos2(1920.0, 1040.0));
+
+        assert_eq!(body.size(), Vec2::new(1920.0, 970.0));
     }
 
     #[test]
