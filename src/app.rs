@@ -14,6 +14,7 @@ use crate::indexer::{IndexJob, IndexedPhoto, Indexer};
 use crate::photo_limit::{INITIAL_PHOTO_LIMIT, MAX_PHOTO_LIMIT, next_photo_limit};
 use crate::scan_state::{begin_scan, finish_scan};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
+use crate::ui_text::middle_truncate;
 use crate::viewer::{NavigationDirection, ViewerState, adjacent_photo_id};
 
 const THUMBNAIL_SIZE: f32 = 132.0;
@@ -601,6 +602,7 @@ impl MyCasaApp {
     }
 
     fn ui_people_panel(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(220.0);
         ui.visuals_mut().widgets.noninteractive.bg_fill = PANEL_BG;
         ui.horizontal(|ui| {
             ui.label(
@@ -618,7 +620,12 @@ impl MyCasaApp {
         if let Some(photo_id) = self.selected_photo {
             if let Some(photo) = self.photos.iter().find(|photo| photo.id == photo_id) {
                 ui.label(RichText::new("Photo selectionnee").strong());
-                ui.label(photo.path.display().to_string());
+                let available_chars = (ui.available_width() / 7.0).max(24.0) as usize;
+                ui.label(middle_truncate(
+                    &photo.path.display().to_string(),
+                    available_chars,
+                ))
+                .on_hover_text(photo.path.display().to_string());
                 if photo.picasa_face_count > 0 {
                     ui.label(format!("{} visage(s) Picasa", photo.picasa_face_count));
                 } else {
@@ -654,14 +661,14 @@ impl MyCasaApp {
                 });
             });
             ui.separator();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new("Dossier selectionne")
                         .color(PICASA_BLUE)
                         .strong(),
                 );
-                ui.add_space(120.0);
+                ui.add_space(24.0);
                 for label in [
                     "Album Web",
                     "E-mail",
@@ -677,7 +684,8 @@ impl MyCasaApp {
                 }
                 if let Ok(catalog) = &self.catalog {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(catalog.path().display().to_string());
+                        let path = catalog.path().display().to_string();
+                        ui.label(middle_truncate(&path, 36)).on_hover_text(path);
                     });
                 }
             });
@@ -710,7 +718,8 @@ impl eframe::App for MyCasaApp {
 
             egui::SidePanel::right("people_panel")
                 .resizable(true)
-                .default_width(184.0)
+                .default_width(220.0)
+                .width_range(210.0..=320.0)
                 .frame(egui::Frame::default().fill(PANEL_BG))
                 .show(ctx, |ui| self.ui_people_panel(ui));
 
