@@ -344,9 +344,7 @@ impl ViewerState {
     }
 
     fn show_image(&self, ui: &mut egui::Ui, stage_size: Vec2) {
-        let available = stage_size;
-        let image_size = self.visible_texture().map(TextureHandle::size_vec2);
-        let viewer_size = viewer_canvas_size(available, image_size);
+        let viewer_size = viewer_canvas_size(stage_size);
         let (rect, _) = ui.allocate_exact_size(viewer_size, egui::Sense::drag());
 
         ui.painter().rect_filled(rect, 0.0, VIEWER_CANVAS_BG);
@@ -392,22 +390,12 @@ pub fn adjusted_zoom(current: f32, delta: f32) -> f32 {
     (current + delta).clamp(VIEWER_MIN_ZOOM, VIEWER_MAX_ZOOM)
 }
 
-pub fn viewer_canvas_size(available: Vec2, image_size: Option<Vec2>) -> Vec2 {
+pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
     let height = (available.y - VIEWER_METADATA_HEIGHT)
         .max(VIEWER_MIN_CANVAS_HEIGHT)
         .min(available.y.max(VIEWER_MIN_CANVAS_HEIGHT));
-    let width = match image_size.filter(|size| size.x > 0.0 && size.y > 0.0) {
-        Some(size) if size.y > size.x => {
-            let portrait_width = height * (size.x / size.y) + 280.0;
-            portrait_width.clamp(
-                VIEWER_MIN_CANVAS_WIDTH,
-                available.x.max(VIEWER_MIN_CANVAS_WIDTH),
-            )
-        }
-        _ => available.x.max(VIEWER_MIN_CANVAS_WIDTH),
-    };
 
-    Vec2::new(width, height)
+    Vec2::new(available.x.max(VIEWER_MIN_CANVAS_WIDTH), height)
 }
 
 pub fn viewer_stage_size(total: Vec2) -> Vec2 {
@@ -517,30 +505,18 @@ mod tests {
 
     #[test]
     fn viewer_canvas_keeps_room_for_metadata_bar() {
-        let large = viewer_canvas_size(Vec2::new(1200.0, 860.0), None);
-        let small = viewer_canvas_size(Vec2::new(640.0, 400.0), None);
+        let large = viewer_canvas_size(Vec2::new(1200.0, 860.0));
+        let small = viewer_canvas_size(Vec2::new(640.0, 400.0));
 
         assert_eq!(large, Vec2::new(1200.0, 816.0));
         assert_eq!(small, Vec2::new(680.0, 356.0));
     }
 
     #[test]
-    fn viewer_canvas_narrows_for_portrait_images() {
-        let portrait =
-            viewer_canvas_size(Vec2::new(1200.0, 860.0), Some(Vec2::new(1080.0, 1920.0)));
-        let landscape =
-            viewer_canvas_size(Vec2::new(1200.0, 860.0), Some(Vec2::new(1920.0, 1080.0)));
+    fn viewer_canvas_uses_full_stage_width() {
+        let canvas = viewer_canvas_size(Vec2::new(1680.0, 960.0));
 
-        assert!(portrait.x < landscape.x);
-        assert_eq!(landscape.x, 1200.0);
-        assert!(portrait.x >= VIEWER_MIN_CANVAS_WIDTH);
-    }
-
-    #[test]
-    fn viewer_canvas_uses_full_stage_width_for_landscape_images() {
-        let canvas = viewer_canvas_size(Vec2::new(1680.0, 960.0), Some(Vec2::new(1600.0, 900.0)));
-
-        assert_eq!(canvas.x, 1680.0);
+        assert_eq!(canvas, Vec2::new(1680.0, 916.0));
     }
 
     #[test]
