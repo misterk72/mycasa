@@ -28,3 +28,4 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - Bande bleue de statut au-dessus du tray bas.
 - Viewer edition : panneau outils gauche, filmstrip haut et canevas gris central.
 - Viewer clair : fond gris Picasa, panneau outils pale et image centrale plus grande.
+- Viewer integre : la vue edition remplace la phototheque au lieu de flotter au-dessus.

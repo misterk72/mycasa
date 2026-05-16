@@ -8,7 +8,9 @@ use egui::{Color32, ColorImage, RichText, TextureHandle, TextureOptions, Vec2};
 use crate::catalog::Photo;
 use crate::thumbnails::load_cached_thumbnail_image;
 
+#[cfg(test)]
 const VIEWER_MIN_SIZE: Vec2 = Vec2::new(980.0, 680.0);
+#[cfg(test)]
 const VIEWER_MAX_SIZE: Vec2 = Vec2::new(1280.0, 880.0);
 const VIEWER_TOOL_PANEL_WIDTH: f32 = 210.0;
 const VIEWER_FILMSTRIP_HEIGHT: f32 = 34.0;
@@ -52,8 +54,18 @@ fn message_matches_current_photo(current_photo_id: Option<i64>, message: &Viewer
 }
 
 impl ViewerState {
+    pub fn is_open(&self) -> bool {
+        self.current.is_some()
+    }
+
     pub fn current_photo_id(&self) -> Option<i64> {
         self.current.as_ref().map(|photo| photo.id)
+    }
+
+    fn close(&mut self) {
+        self.current = None;
+        self.receiver = None;
+        self.loading = false;
     }
 
     pub fn open(&mut self, photo: Photo) {
@@ -66,46 +78,36 @@ impl ViewerState {
         self.loading = false;
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
+    pub fn show_embedded(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let Some(photo) = self.current.clone() else {
             return;
         };
 
         self.poll_loaded(ctx);
         self.ensure_loading(ctx, &photo);
+        ui.painter().rect_filled(ui.max_rect(), 0.0, VIEWER_BG);
+        self.show_contents(ui, &photo);
+    }
 
-        let mut open = true;
-        egui::Window::new("Phototheque")
-            .open(&mut open)
-            .resizable(true)
-            .frame(egui::Frame::window(&ctx.style()).fill(VIEWER_BG))
-            .default_size(viewer_window_size(photo.width, photo.height))
-            .min_size(VIEWER_MIN_SIZE)
-            .vscroll(false)
-            .show(ctx, |ui| {
-                self.show_filmstrip(ui);
+    fn show_contents(&mut self, ui: &mut egui::Ui, photo: &Photo) {
+        self.show_filmstrip(ui);
+        ui.separator();
+        ui.horizontal(|ui| {
+            self.show_tool_panel(ui);
+            ui.separator();
+            ui.vertical(|ui| {
+                self.show_image(ui);
                 ui.separator();
-                ui.horizontal(|ui| {
-                    self.show_tool_panel(ui);
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        self.show_image(ui);
-                        ui.separator();
-                        self.show_metadata(ui, &photo);
-                    });
-                });
+                self.show_metadata(ui, photo);
             });
-
-        if !open {
-            self.current = None;
-        }
+        });
     }
 
     fn show_filmstrip(&mut self, ui: &mut egui::Ui) {
         ui.painter().rect_filled(ui.max_rect(), 0.0, VIEWER_BG);
         ui.horizontal(|ui| {
             if ui.button("← Phototheque").clicked() {
-                self.current = None;
+                self.close();
             }
             if ui.button("▶ Diaporama").clicked() {
                 self.zoom = 1.0;
@@ -300,6 +302,7 @@ impl ViewerState {
     }
 }
 
+#[cfg(test)]
 pub fn viewer_window_size(width: Option<u32>, height: Option<u32>) -> Vec2 {
     let Some(width) = width.filter(|value| *value > 0) else {
         return Vec2::new(1180.0, 800.0);

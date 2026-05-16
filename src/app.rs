@@ -688,38 +688,43 @@ impl eframe::App for MyCasaApp {
             self.refresh_photos();
         }
 
-        egui::TopBottomPanel::top("picasa_top_chrome")
-            .exact_height(60.0)
-            .show(ctx, |ui| self.ui_top_chrome(ui));
+        if self.viewer.is_open() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::default().fill(Color32::from_rgb(224, 226, 229)))
+                .show(ctx, |ui| self.viewer.show_embedded(ctx, ui));
+        } else {
+            egui::TopBottomPanel::top("picasa_top_chrome")
+                .exact_height(60.0)
+                .show(ctx, |ui| self.ui_top_chrome(ui));
 
-        egui::SidePanel::left("sidebar")
-            .resizable(true)
-            .default_width(220.0)
-            .frame(egui::Frame::default().fill(PANEL_BG))
-            .show(ctx, |ui| self.ui_sidebar(ui));
+            egui::SidePanel::left("sidebar")
+                .resizable(true)
+                .default_width(220.0)
+                .frame(egui::Frame::default().fill(PANEL_BG))
+                .show(ctx, |ui| self.ui_sidebar(ui));
 
-        egui::SidePanel::right("people_panel")
-            .resizable(true)
-            .default_width(184.0)
-            .frame(egui::Frame::default().fill(PANEL_BG))
-            .show(ctx, |ui| self.ui_people_panel(ui));
+            egui::SidePanel::right("people_panel")
+                .resizable(true)
+                .default_width(184.0)
+                .frame(egui::Frame::default().fill(PANEL_BG))
+                .show(ctx, |ui| self.ui_people_panel(ui));
 
-        egui::TopBottomPanel::bottom("picasa_bottom_tray")
-            .exact_height(96.0)
-            .show(ctx, |ui| self.ui_bottom_tray(ui));
+            egui::TopBottomPanel::bottom("picasa_bottom_tray")
+                .exact_height(96.0)
+                .show(ctx, |ui| self.ui_bottom_tray(ui));
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(LIGHTBOX_BG))
-            .show(ctx, |ui| {
-                self.ui_collection_header(ui);
-                self.ui_top_bar(ui);
-                ui.separator();
-                self.ui_grid(ui);
-            });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::default().fill(LIGHTBOX_BG))
+                .show(ctx, |ui| {
+                    self.ui_collection_header(ui);
+                    self.ui_top_bar(ui);
+                    ui.separator();
+                    self.ui_grid(ui);
+                });
+        }
 
         self.handle_viewer_keyboard(ctx);
         self.preload_viewer_neighbors(ctx);
-        self.viewer.show(ctx);
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
