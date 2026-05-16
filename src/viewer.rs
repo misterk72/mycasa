@@ -30,6 +30,7 @@ const VIEWER_IMAGE_MAX_EDGE: u32 = 1600;
 const VIEWER_METADATA_HEIGHT: f32 = 44.0;
 const VIEWER_MIN_CANVAS_HEIGHT: f32 = 240.0;
 const VIEWER_MIN_CANVAS_WIDTH: f32 = 680.0;
+const VIEWER_PANEL_GAP: f32 = 8.0;
 
 #[derive(Clone, Copy)]
 pub enum NavigationDirection {
@@ -104,21 +105,42 @@ impl ViewerState {
     fn show_contents(&mut self, ui: &mut egui::Ui, photo: &Photo) {
         self.show_filmstrip(ui);
         ui.separator();
-        ui.horizontal(|ui| {
-            let panel_height = ui.available_height();
-            ui.allocate_ui_with_layout(
-                Vec2::new(VIEWER_TOOL_PANEL_WIDTH, panel_height),
-                Layout::top_down(Align::Min),
-                |ui| self.show_tool_panel(ui),
-            );
-            ui.separator();
-            let image_panel_size = ui.available_size_before_wrap();
-            ui.allocate_ui_with_layout(image_panel_size, Layout::top_down(Align::Center), |ui| {
+
+        let body_size = ui.available_size_before_wrap();
+        let (body_rect, _) = ui.allocate_exact_size(body_size, egui::Sense::hover());
+        let panel_rect = egui::Rect::from_min_size(
+            body_rect.min,
+            Vec2::new(VIEWER_TOOL_PANEL_WIDTH, body_rect.height()),
+        );
+        let stage_size = viewer_stage_size(body_size);
+        let stage_rect = egui::Rect::from_min_size(
+            egui::pos2(panel_rect.right() + VIEWER_PANEL_GAP, body_rect.top()),
+            stage_size,
+        );
+
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(panel_rect)
+                .layout(Layout::top_down(Align::Min)),
+            |ui| self.show_tool_panel(ui),
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(panel_rect.right() + 1.0, body_rect.top()),
+                egui::pos2(panel_rect.right() + 1.0, body_rect.bottom()),
+            ],
+            Stroke::new(1.0, Color32::from_rgb(154, 160, 166)),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(stage_rect)
+                .layout(Layout::top_down(Align::Center)),
+            |ui| {
                 self.show_image(ui);
                 ui.separator();
                 self.show_metadata(ui, photo);
-            });
-        });
+            },
+        );
     }
 
     fn show_filmstrip(&mut self, ui: &mut egui::Ui) {
@@ -387,6 +409,13 @@ pub fn viewer_canvas_size(available: Vec2, image_size: Option<Vec2>) -> Vec2 {
     Vec2::new(width, height)
 }
 
+pub fn viewer_stage_size(total: Vec2) -> Vec2 {
+    Vec2::new(
+        (total.x - VIEWER_TOOL_PANEL_WIDTH - VIEWER_PANEL_GAP).max(0.0),
+        total.y,
+    )
+}
+
 fn apply_viewer_visuals(ui: &mut egui::Ui) {
     let visuals = ui.visuals_mut();
     visuals.override_text_color = Some(Color32::from_rgb(54, 58, 62));
@@ -494,6 +523,18 @@ mod tests {
         assert!(portrait.x < landscape.x);
         assert_eq!(landscape.x, 1200.0);
         assert!(portrait.x >= VIEWER_MIN_CANVAS_WIDTH);
+    }
+
+    #[test]
+    fn viewer_stage_uses_remaining_width_after_tool_panel() {
+        let stage = viewer_stage_size(Vec2::new(1800.0, 900.0));
+        let narrow = viewer_stage_size(Vec2::new(180.0, 900.0));
+
+        assert_eq!(
+            stage,
+            Vec2::new(1800.0 - VIEWER_TOOL_PANEL_WIDTH - VIEWER_PANEL_GAP, 900.0)
+        );
+        assert_eq!(narrow, Vec2::new(0.0, 900.0));
     }
 
     #[test]
