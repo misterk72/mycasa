@@ -422,7 +422,8 @@ impl MyCasaApp {
             return;
         }
 
-        let columns = columns_for_width(ui.available_width(), TILE_WIDTH);
+        let grid_width = library_grid_width(ui.max_rect());
+        let columns = columns_for_width(grid_width, TILE_WIDTH);
         let total_rows = row_count(self.photos.len(), columns);
 
         ScrollArea::vertical()
@@ -682,15 +683,19 @@ impl MyCasaApp {
                         self.status = format!("{label}: a implementer");
                     }
                 }
-                if let Ok(catalog) = &self.catalog {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let path = catalog.path().display().to_string();
-                        ui.label(middle_truncate(&path, 36)).on_hover_text(path);
-                    });
-                }
             });
+            if let Ok(catalog) = &self.catalog {
+                let path = catalog.path().display().to_string();
+                ui.add_space(2.0);
+                ui.label(RichText::new(middle_truncate(&path, 80)).color(Color32::from_gray(120)))
+                    .on_hover_text(path);
+            }
         });
     }
+}
+
+pub fn library_grid_width(panel_rect: egui::Rect) -> f32 {
+    panel_rect.width()
 }
 
 impl eframe::App for MyCasaApp {
@@ -738,5 +743,17 @@ impl eframe::App for MyCasaApp {
         self.handle_viewer_keyboard(ctx);
         self.preload_viewer_neighbors(ctx);
         ctx.request_repaint_after(Duration::from_millis(250));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_grid_width_uses_panel_rect_width() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1460.0, 900.0));
+
+        assert_eq!(library_grid_width(rect), 1460.0);
     }
 }
