@@ -67,7 +67,8 @@ impl Catalog {
                         picasa_caption, picasa_keywords, picasa_starred,
                         (SELECT COUNT(*) FROM photo_faces WHERE photo_faces.photo_id = photos.id)
                  FROM photos
-                 ORDER BY imported_at DESC, id DESC
+                 ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
+                          id DESC
                  LIMIT ?1",
             )?
         } else {
@@ -78,7 +79,8 @@ impl Catalog {
                  FROM photos
                  WHERE file_name LIKE ?2 OR parent_path LIKE ?2 OR path LIKE ?2
                     OR picasa_caption LIKE ?2 OR picasa_keywords LIKE ?2
-                 ORDER BY imported_at DESC, id DESC
+                 ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
+                          id DESC
                  LIMIT ?1",
             )?
         };
@@ -373,6 +375,26 @@ mod tests {
 
         assert_eq!(written, 2);
         assert_eq!(loaded.len(), 2);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn search_photos_orders_by_photo_time_descending() {
+        let path = test_db_path("chrono-order");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        let mut older = crate::indexer::IndexedPhoto::for_test(PathBuf::from("/photos/older.jpg"));
+        older.modified_at = Some(1_700_000_000);
+        let mut newer = crate::indexer::IndexedPhoto::for_test(PathBuf::from("/photos/newer.jpg"));
+        newer.modified_at = Some(1_800_000_000);
+
+        catalog.upsert_photo(&older).unwrap();
+        catalog.upsert_photo(&newer).unwrap();
+
+        let loaded = catalog.search_photos("/photos", 10).unwrap();
+
+        assert_eq!(loaded[0].path, PathBuf::from("/photos/newer.jpg"));
+        assert_eq!(loaded[1].path, PathBuf::from("/photos/older.jpg"));
 
         let _ = std::fs::remove_file(path);
     }

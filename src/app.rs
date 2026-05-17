@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::{Datelike, LocalResult, TimeZone, Utc};
 use egui::{Align, Color32, Layout, RichText, ScrollArea, Sense, Stroke, Vec2};
 
 use crate::catalog::{Catalog, CatalogError, Photo};
@@ -32,6 +33,18 @@ const TILE_SHADOW: Color32 = Color32::from_rgb(205, 205, 202);
 const CHROME_BG: Color32 = Color32::from_rgb(236, 237, 238);
 const CHROME_BORDER: Color32 = Color32::from_rgb(176, 182, 188);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibraryViewMode {
+    FolderTree,
+    RetroChronological,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ChronologicalGridRow {
+    Section(String),
+    Photos(Vec<usize>),
+}
+
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
     indexer: Indexer,
@@ -42,6 +55,7 @@ pub struct MyCasaApp {
     folders: Vec<PathBuf>,
     albums: Vec<String>,
     selected_photo: Option<i64>,
+    library_view_mode: LibraryViewMode,
     status: String,
     search: String,
     search_debouncer: Debouncer,
@@ -88,6 +102,7 @@ impl MyCasaApp {
                 "Import recent".to_owned(),
             ],
             selected_photo: None,
+            library_view_mode: LibraryViewMode::RetroChronological,
             status,
             search: String::new(),
             search_debouncer: Debouncer::new(SEARCH_DEBOUNCE),
@@ -346,8 +361,13 @@ impl MyCasaApp {
             if ui.button("Diaporama").clicked() {
                 self.status = "Diaporama: a implementer".to_owned();
             }
+            if ui.button("Dossiers").clicked() {
+                self.library_view_mode = LibraryViewMode::FolderTree;
+                self.status = "Vue dossiers".to_owned();
+            }
             if ui.button("Chronologie").clicked() {
-                self.status = "Chronologie: a implementer".to_owned();
+                self.library_view_mode = LibraryViewMode::RetroChronological;
+                self.status = "Vue retrochronologique".to_owned();
             }
             if ui.button("CD cadeau").clicked() {
                 self.status = "CD cadeau: a implementer".to_owned();
@@ -379,9 +399,12 @@ impl MyCasaApp {
             );
             ui.vertical(|ui| {
                 ui.label(
-                    RichText::new("Phototheque")
-                        .size(22.0)
-                        .color(Color32::from_rgb(174, 112, 45)),
+                    RichText::new(match self.library_view_mode {
+                        LibraryViewMode::FolderTree => "Phototheque",
+                        LibraryViewMode::RetroChronological => "Chronologie",
+                    })
+                    .size(22.0)
+                    .color(Color32::from_rgb(174, 112, 45)),
                 );
                 ui.label(
                     RichText::new(format!("{} photo(s) affichee(s)", self.photos.len()))
@@ -402,6 +425,25 @@ impl MyCasaApp {
 
     fn ui_top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            if ui
+                .selectable_label(
+                    self.library_view_mode == LibraryViewMode::FolderTree,
+                    "Dossiers",
+                )
+                .clicked()
+            {
+                self.library_view_mode = LibraryViewMode::FolderTree;
+            }
+            if ui
+                .selectable_label(
+                    self.library_view_mode == LibraryViewMode::RetroChronological,
+                    "Chronologie",
+                )
+                .clicked()
+            {
+                self.library_view_mode = LibraryViewMode::RetroChronological;
+            }
+            ui.separator();
             ui.label(RichText::new("Petites vignettes").color(Color32::from_gray(100)));
             ui.label(
                 RichText::new("Vignettes normales")
@@ -423,6 +465,13 @@ impl MyCasaApp {
             return;
         }
 
+        match self.library_view_mode {
+            LibraryViewMode::FolderTree => self.ui_folder_grid(ui),
+            LibraryViewMode::RetroChronological => self.ui_retrochronological_grid(ui),
+        }
+    }
+
+    fn ui_folder_grid(&mut self, ui: &mut egui::Ui) {
         let grid_width = library_grid_width(ui.max_rect());
         let columns = columns_for_width(grid_width, TILE_WIDTH);
         let total_rows = row_count(self.photos.len(), columns);
@@ -446,6 +495,60 @@ impl MyCasaApp {
                     }
                 },
             );
+    }
+
+    fn ui_retrochronological_grid(&mut self, ui: &mut egui::Ui) {
+        let grid_width = library_grid_width(ui.max_rect());
+        let columns = columns_for_width(grid_width, TILE_WIDTH);
+        let rows = retrochronological_grid_rows(&self.photos, columns);
+
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show_rows(
+                ui,
+                TILE_HEIGHT + TILE_PADDING,
+                rows.len(),
+                |ui, row_range| {
+                    for row_index in row_range {
+                        match &rows[row_index] {
+                            ChronologicalGridRow::Section(label) => {
+                                self.chronology_section_header(ui, label);
+                            }
+                            ChronologicalGridRow::Photos(photo_indices) => {
+                                ui.horizontal(|ui| {
+                                    for photo_index in photo_indices {
+                                        let photo = self.photos[*photo_index].clone();
+                                        self.photo_tile(ui, &photo);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                },
+            );
+    }
+
+    fn chronology_section_header(&self, ui: &mut egui::Ui, label: &str) {
+        let available = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(available, TILE_HEIGHT + TILE_PADDING),
+            Sense::hover(),
+        );
+        let header_rect =
+            egui::Rect::from_min_size(rect.min + Vec2::new(0.0, 10.0), Vec2::new(available, 42.0));
+        ui.painter()
+            .rect_filled(header_rect, 0.0, Color32::from_rgb(238, 239, 239));
+        ui.painter().line_segment(
+            [header_rect.left_bottom(), header_rect.right_bottom()],
+            Stroke::new(1.0, CHROME_BORDER),
+        );
+        ui.painter().text(
+            header_rect.left_center() + Vec2::new(10.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::TextStyle::Heading.resolve(ui.style()),
+            Color32::from_rgb(174, 112, 45),
+        );
     }
 
     fn handle_viewer_keyboard(&mut self, ctx: &egui::Context) {
@@ -696,6 +799,102 @@ pub fn library_grid_width(panel_rect: egui::Rect) -> f32 {
     panel_rect.width()
 }
 
+fn retrochronological_grid_rows(photos: &[Photo], columns: usize) -> Vec<ChronologicalGridRow> {
+    let columns = columns.max(1);
+    let mut indices: Vec<usize> = (0..photos.len()).collect();
+    indices.sort_by(|left, right| {
+        photo_time_key(&photos[*right])
+            .cmp(&photo_time_key(&photos[*left]))
+            .then_with(|| photos[*right].id.cmp(&photos[*left].id))
+    });
+
+    let mut rows = Vec::new();
+    let mut current_section = None::<String>;
+    let mut current_photos = Vec::new();
+
+    for photo_index in indices {
+        let section = photo_section_label(&photos[photo_index]);
+        if current_section.as_deref() != Some(section.as_str()) {
+            push_photo_rows(&mut rows, &mut current_photos, columns);
+            rows.push(ChronologicalGridRow::Section(section.clone()));
+            current_section = Some(section);
+        }
+        current_photos.push(photo_index);
+    }
+
+    push_photo_rows(&mut rows, &mut current_photos, columns);
+    rows
+}
+
+fn push_photo_rows(
+    rows: &mut Vec<ChronologicalGridRow>,
+    photo_indices: &mut Vec<usize>,
+    columns: usize,
+) {
+    for chunk in photo_indices.chunks(columns) {
+        rows.push(ChronologicalGridRow::Photos(chunk.to_vec()));
+    }
+    photo_indices.clear();
+}
+
+fn photo_time_key(photo: &Photo) -> i64 {
+    photo
+        .captured_at
+        .as_deref()
+        .and_then(parse_photo_timestamp)
+        .or(photo.modified_at)
+        .unwrap_or_default()
+}
+
+fn parse_photo_timestamp(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|datetime| datetime.timestamp())
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y:%m:%d %H:%M:%S")
+                .ok()
+                .map(|datetime| datetime.and_utc().timestamp())
+        })
+        .or_else(|| {
+            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .map(|datetime| datetime.and_utc().timestamp())
+        })
+}
+
+fn photo_section_label(photo: &Photo) -> String {
+    let timestamp = photo_time_key(photo);
+    if timestamp <= 0 {
+        return "Date inconnue".to_owned();
+    }
+
+    match Utc.timestamp_opt(timestamp, 0) {
+        LocalResult::Single(datetime) => {
+            format!("{} {}", month_name(datetime.month()), datetime.year())
+        }
+        _ => "Date inconnue".to_owned(),
+    }
+}
+
+fn month_name(month: u32) -> &'static str {
+    match month {
+        1 => "Janvier",
+        2 => "Fevrier",
+        3 => "Mars",
+        4 => "Avril",
+        5 => "Mai",
+        6 => "Juin",
+        7 => "Juillet",
+        8 => "Aout",
+        9 => "Septembre",
+        10 => "Octobre",
+        11 => "Novembre",
+        12 => "Decembre",
+        _ => "Date inconnue",
+    }
+}
+
 fn viewer_preload_candidates(photos: &[Photo], current_id: i64, radius: usize) -> Vec<Photo> {
     let Some(current_index) = photos.iter().position(|photo| photo.id == current_id) else {
         return Vec::new();
@@ -791,6 +990,53 @@ mod tests {
         let ids: Vec<i64> = candidates.iter().map(|photo| photo.id).collect();
 
         assert_eq!(ids, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn retrochronological_rows_sort_descending_and_group_by_month() {
+        let mut older = photo_for_test(1);
+        older.modified_at = Some(1_704_067_200); // 2024-01-01
+        let mut newest = photo_for_test(2);
+        newest.modified_at = Some(1_709_251_200); // 2024-03-01
+        let mut same_month = photo_for_test(3);
+        same_month.modified_at = Some(1_709_164_800); // 2024-02-20
+        let photos = vec![older, newest, same_month];
+
+        let rows = retrochronological_grid_rows(&photos, 2);
+
+        assert_eq!(
+            rows,
+            vec![
+                ChronologicalGridRow::Section("Mars 2024".to_owned()),
+                ChronologicalGridRow::Photos(vec![1]),
+                ChronologicalGridRow::Section("Fevrier 2024".to_owned()),
+                ChronologicalGridRow::Photos(vec![2]),
+                ChronologicalGridRow::Section("Janvier 2024".to_owned()),
+                ChronologicalGridRow::Photos(vec![0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn retrochronological_rows_use_captured_at_before_modified_at() {
+        let mut captured_newer = photo_for_test(1);
+        captured_newer.modified_at = Some(1);
+        captured_newer.captured_at = Some("2025-04-03T10:00:00Z".to_owned());
+        let mut modified_newer = photo_for_test(2);
+        modified_newer.modified_at = Some(1_800_000_000);
+        let photos = vec![captured_newer, modified_newer];
+
+        let rows = retrochronological_grid_rows(&photos, 3);
+
+        assert_eq!(
+            rows,
+            vec![
+                ChronologicalGridRow::Section("Janvier 2027".to_owned()),
+                ChronologicalGridRow::Photos(vec![1]),
+                ChronologicalGridRow::Section("Avril 2025".to_owned()),
+                ChronologicalGridRow::Photos(vec![0]),
+            ]
+        );
     }
 
     fn photo_for_test(id: i64) -> Photo {

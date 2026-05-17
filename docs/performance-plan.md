@@ -44,6 +44,7 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Chargement catalogue pagine par pas de 500 photos, plafonne a 5000 pour proteger la grille.
 - Cache memoire miniatures borne a 800 textures pretes, avec regeneration possible depuis le cache disque.
 - Demandes miniatures visibles prioritaires dans la file de chargement.
+- Vue retrochronologique a plat avec tri par date capturee, date de modification en repli, et en-tetes mensuels virtualises.
 - Index SQLite explicites sur chargement recent, recherche fichier/dossier et visages par photo.
 - Recherche debouncee a 250 ms pour eviter une requete catalogue a chaque frappe.
 - Viewer charge une preview depuis le cache miniature avant l image 1600 px, ignore les reponses obsoletes, et adapte sa taille initiale au ratio de la photo.
