@@ -5,7 +5,10 @@ use std::{
 };
 
 use chrono::{Datelike, LocalResult, TimeZone, Utc};
-use egui::{Align, Color32, Layout, RichText, ScrollArea, Sense, Stroke, Vec2};
+use egui::{
+    Align, Color32, Layout, RichText, ScrollArea, Sense, Stroke, Vec2,
+    containers::scroll_area::ScrollSource,
+};
 
 use crate::catalog::{Catalog, CatalogError, Photo};
 use crate::debounce::Debouncer;
@@ -23,6 +26,10 @@ const TILE_PADDING: f32 = 8.0;
 const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
+const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 1.15;
+const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 0.55;
+const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.055;
+const INERTIAL_SCROLL_STOP_SPEED: f32 = 8.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -46,6 +53,13 @@ enum ChronologicalGridRow {
     Photos(Vec<usize>),
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct InertialScrollState {
+    offset: f32,
+    velocity: f32,
+    max_offset: f32,
+}
+
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
     indexer: Indexer,
@@ -57,6 +71,7 @@ pub struct MyCasaApp {
     albums: Vec<String>,
     selected_photo: Option<i64>,
     library_view_mode: LibraryViewMode,
+    main_scroll: InertialScrollState,
     status: String,
     search: String,
     search_debouncer: Debouncer,
@@ -104,6 +119,7 @@ impl MyCasaApp {
             ],
             selected_photo: None,
             library_view_mode: LibraryViewMode::RetroChronological,
+            main_scroll: InertialScrollState::default(),
             status,
             search: String::new(),
             search_debouncer: Debouncer::new(SEARCH_DEBOUNCE),
@@ -476,60 +492,111 @@ impl MyCasaApp {
         let grid_width = library_grid_width(ui.max_rect());
         let columns = columns_for_width(grid_width, TILE_WIDTH);
         let total_rows = row_count(self.photos.len(), columns);
+        self.update_main_scroll(ui);
 
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show_rows(
-                ui,
-                TILE_HEIGHT + TILE_PADDING,
-                total_rows,
-                |ui, row_range| {
-                    for row_index in row_range {
-                        ui.horizontal(|ui| {
-                            for photo_index in
-                                item_range_for_row(row_index, columns, self.photos.len())
-                            {
-                                let photo = self.photos[photo_index].clone();
-                                self.photo_tile(ui, &photo);
-                            }
-                        });
-                    }
-                },
-            );
+        let output = self.main_scroll_area().show_rows(
+            ui,
+            TILE_HEIGHT + TILE_PADDING,
+            total_rows,
+            |ui, row_range| {
+                for row_index in row_range {
+                    ui.horizontal(|ui| {
+                        for photo_index in item_range_for_row(row_index, columns, self.photos.len())
+                        {
+                            let photo = self.photos[photo_index].clone();
+                            self.photo_tile(ui, &photo);
+                        }
+                    });
+                }
+            },
+        );
+        self.sync_main_scroll_from_output(
+            output.state.offset.y,
+            output.content_size,
+            output.inner_rect,
+        );
     }
 
     fn ui_retrochronological_grid(&mut self, ui: &mut egui::Ui) {
         let grid_width = library_grid_width(ui.max_rect());
         let columns = columns_for_width(grid_width, TILE_WIDTH);
         let rows = retrochronological_grid_rows(&self.photos, columns);
+        self.update_main_scroll(ui);
 
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show_viewport(ui, |ui, viewport| {
-                let row_layout = chronological_row_layout(&rows);
-                let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
-                ui.set_min_height(total_height);
+        let output = self.main_scroll_area().show_viewport(ui, |ui, viewport| {
+            let row_layout = chronological_row_layout(&rows);
+            let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
+            ui.set_min_height(total_height);
 
-                let origin = ui.min_rect().min;
-                for (row_index, (top, bottom)) in row_layout.iter().enumerate() {
-                    if *bottom < viewport.top() || *top > viewport.bottom() {
-                        continue;
+            let origin = ui.min_rect().min;
+            for (row_index, (top, bottom)) in row_layout.iter().enumerate() {
+                if *bottom < viewport.top() || *top > viewport.bottom() {
+                    continue;
+                }
+
+                let row_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x, origin.y + *top),
+                    Vec2::new(grid_width, bottom - top),
+                );
+                match &rows[row_index] {
+                    ChronologicalGridRow::Section { label, photos } => {
+                        self.chronology_section_row(ui, row_rect, label, photos);
                     }
-
-                    let row_rect = egui::Rect::from_min_size(
-                        egui::pos2(origin.x, origin.y + *top),
-                        Vec2::new(grid_width, bottom - top),
-                    );
-                    match &rows[row_index] {
-                        ChronologicalGridRow::Section { label, photos } => {
-                            self.chronology_section_row(ui, row_rect, label, photos);
-                        }
-                        ChronologicalGridRow::Photos(photo_indices) => {
-                            self.chronology_photo_row(ui, row_rect, photo_indices);
-                        }
+                    ChronologicalGridRow::Photos(photo_indices) => {
+                        self.chronology_photo_row(ui, row_rect, photo_indices);
                     }
                 }
-            });
+            }
+        });
+        self.sync_main_scroll_from_output(
+            output.state.offset.y,
+            output.content_size,
+            output.inner_rect,
+        );
+    }
+
+    fn main_scroll_area(&self) -> ScrollArea {
+        ScrollArea::vertical()
+            .id_salt("main_library_grid")
+            .auto_shrink([false, false])
+            .scroll_source(ScrollSource {
+                scroll_bar: true,
+                drag: true,
+                mouse_wheel: false,
+            })
+            .vertical_scroll_offset(self.main_scroll.offset)
+    }
+
+    fn update_main_scroll(&mut self, ui: &egui::Ui) {
+        let hovered = ui
+            .ctx()
+            .input(|input| input.pointer.hover_pos())
+            .is_some_and(|position| ui.max_rect().contains(position));
+        let (wheel_delta, dt) = ui.ctx().input(|input| {
+            (
+                if hovered {
+                    input.smooth_scroll_delta.y
+                } else {
+                    0.0
+                },
+                input.stable_dt.clamp(1.0 / 240.0, 0.1),
+            )
+        });
+
+        if self.main_scroll.tick(wheel_delta, dt) {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn sync_main_scroll_from_output(
+        &mut self,
+        output_offset: f32,
+        content_size: Vec2,
+        inner_rect: egui::Rect,
+    ) {
+        let max_offset = (content_size.y - inner_rect.height()).max(0.0);
+        self.main_scroll
+            .sync_from_scroll_area(output_offset, max_offset);
     }
 
     fn chronology_section_row(
@@ -843,6 +910,44 @@ pub fn library_grid_width(panel_rect: egui::Rect) -> f32 {
     panel_rect.width()
 }
 
+impl InertialScrollState {
+    fn tick(&mut self, wheel_delta: f32, dt: f32) -> bool {
+        if wheel_delta.abs() > f32::EPSILON {
+            let applied_delta = -wheel_delta * INERTIAL_SCROLL_WHEEL_MULTIPLIER;
+            self.offset = clamp_scroll_offset(self.offset + applied_delta, self.max_offset);
+            self.velocity =
+                applied_delta / dt.max(1.0 / 240.0) * INERTIAL_SCROLL_VELOCITY_MULTIPLIER;
+            return true;
+        }
+
+        if self.velocity.abs() <= INERTIAL_SCROLL_STOP_SPEED {
+            self.velocity = 0.0;
+            return false;
+        }
+
+        self.offset = clamp_scroll_offset(self.offset + self.velocity * dt, self.max_offset);
+        if self.offset <= 0.0 || self.offset >= self.max_offset {
+            self.velocity = 0.0;
+            return false;
+        }
+
+        self.velocity *= INERTIAL_SCROLL_FRICTION_PER_SECOND.powf(dt);
+        true
+    }
+
+    fn sync_from_scroll_area(&mut self, offset: f32, max_offset: f32) {
+        self.max_offset = max_offset.max(0.0);
+        self.offset = clamp_scroll_offset(offset, self.max_offset);
+        if self.offset <= 0.0 || self.offset >= self.max_offset {
+            self.velocity = 0.0;
+        }
+    }
+}
+
+fn clamp_scroll_offset(offset: f32, max_offset: f32) -> f32 {
+    offset.clamp(0.0, max_offset.max(0.0))
+}
+
 fn retrochronological_grid_rows(photos: &[Photo], columns: usize) -> Vec<ChronologicalGridRow> {
     let columns = columns.max(1);
     let mut indices: Vec<usize> = (0..photos.len()).collect();
@@ -1050,6 +1155,50 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1460.0, 900.0));
 
         assert_eq!(library_grid_width(rect), 1460.0);
+    }
+
+    #[test]
+    fn inertial_scroll_adds_velocity_from_wheel_delta() {
+        let mut scroll = InertialScrollState {
+            max_offset: 1000.0,
+            ..Default::default()
+        };
+
+        let active = scroll.tick(-120.0, 1.0 / 60.0);
+
+        assert!(active);
+        assert!(scroll.offset > 0.0);
+        assert!(scroll.velocity > 0.0);
+    }
+
+    #[test]
+    fn inertial_scroll_continues_and_slows_without_wheel_delta() {
+        let mut scroll = InertialScrollState {
+            offset: 100.0,
+            velocity: 900.0,
+            max_offset: 1000.0,
+        };
+
+        let active = scroll.tick(0.0, 1.0 / 60.0);
+
+        assert!(active);
+        assert!(scroll.offset > 100.0);
+        assert!(scroll.velocity < 900.0);
+    }
+
+    #[test]
+    fn inertial_scroll_clamps_at_bounds() {
+        let mut scroll = InertialScrollState {
+            offset: 990.0,
+            velocity: 2000.0,
+            max_offset: 1000.0,
+        };
+
+        let active = scroll.tick(0.0, 1.0 / 10.0);
+
+        assert!(!active);
+        assert_eq!(scroll.offset, 1000.0);
+        assert_eq!(scroll.velocity, 0.0);
     }
 
     #[test]
