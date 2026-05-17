@@ -929,11 +929,14 @@ impl InertialScrollState {
     fn tick(&mut self, wheel_delta: f32, dt: f32) -> bool {
         if wheel_delta.abs() > f32::EPSILON {
             let applied_delta = -wheel_delta * INERTIAL_SCROLL_WHEEL_MULTIPLIER;
-            self.offset = clamp_scroll_offset(self.offset + applied_delta, self.max_offset);
             self.velocity = wheel_fling_velocity(self.velocity, applied_delta, dt);
-            return true;
+            return self.advance_with_velocity(dt);
         }
 
+        self.advance_with_velocity(dt)
+    }
+
+    fn advance_with_velocity(&mut self, dt: f32) -> bool {
         if self.velocity.abs() <= INERTIAL_SCROLL_STOP_SPEED {
             self.velocity = 0.0;
             return false;
@@ -1235,6 +1238,18 @@ mod tests {
     }
 
     #[test]
+    fn inertial_scroll_wheel_tick_uses_velocity_step_instead_of_full_wheel_jump() {
+        let mut scroll = InertialScrollState {
+            max_offset: 1000.0,
+            ..Default::default()
+        };
+
+        scroll.tick(-120.0, 1.0 / 60.0);
+
+        assert!(scroll.offset < 120.0 * INERTIAL_SCROLL_WHEEL_MULTIPLIER);
+    }
+
+    #[test]
     fn inertial_scroll_initializes_bounds_before_first_wheel_tick() {
         let mut scroll = InertialScrollState::default();
 
@@ -1259,6 +1274,21 @@ mod tests {
         assert!(active);
         assert!(scroll.offset > 100.0);
         assert!(scroll.velocity < 900.0);
+    }
+
+    #[test]
+    fn inertial_scroll_wheel_tick_during_motion_keeps_same_direction_momentum() {
+        let mut scroll = InertialScrollState {
+            offset: 100.0,
+            velocity: 700.0,
+            max_offset: 1000.0,
+        };
+
+        let active = scroll.tick(-8.0, 1.0 / 60.0);
+
+        assert!(active);
+        assert!(scroll.offset > 100.0);
+        assert!(scroll.velocity > 700.0);
     }
 
     #[test]
