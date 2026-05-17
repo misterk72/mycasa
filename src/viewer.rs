@@ -106,6 +106,14 @@ impl ViewerState {
         self.current.as_ref().map(|photo| photo.id)
     }
 
+    pub fn can_preload_around_current(&self) -> bool {
+        let Some(current_id) = self.current_photo_id() else {
+            return false;
+        };
+
+        self.loaded_photo_id == Some(current_id)
+    }
+
     pub fn close(&mut self) {
         self.current = None;
         self.loaded_photo_id = None;
@@ -880,6 +888,23 @@ mod tests {
         assert_eq!(viewer.loaded_photo_id, Some(photo.id));
         assert!(viewer.full_texture.is_some());
         assert!(viewer.preloaded_images.contains_key(&photo.id));
+    }
+
+    #[test]
+    fn viewer_allows_preload_only_after_current_photo_is_loaded() {
+        let mut viewer = ViewerState::default();
+        let photo = photo_for_test(12);
+
+        assert!(!viewer.can_preload_around_current());
+
+        viewer.open(photo.clone());
+        assert!(!viewer.can_preload_around_current());
+
+        viewer.loaded_photo_id = Some(photo.id);
+        assert!(viewer.can_preload_around_current());
+
+        viewer.open(photo_for_test(13));
+        assert!(!viewer.can_preload_around_current());
     }
 
     #[test]

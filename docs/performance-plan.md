@@ -47,5 +47,5 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Index SQLite explicites sur chargement recent, recherche fichier/dossier et visages par photo.
 - Recherche debouncee a 250 ms pour eviter une requete catalogue a chaque frappe.
 - Viewer charge une preview depuis le cache miniature avant l image 1600 px, ignore les reponses obsoletes, et adapte sa taille initiale au ratio de la photo.
-- Le viewer conserve un cache memoire borne des images 1600 px prechargees et limite les decodages concurrents pour eviter de saturer le NAS.
+- Le viewer conserve un cache memoire borne des images 1600 px prechargees, limite les decodages concurrents, et attend que l'image courante soit chargee avant de lancer les prechargements voisins.
 - Le format HEIC/HEIF n'est pas encore pris en charge par le decodeur actuel ; il doit etre ajoute avec un backend natif portable et teste avant activation dans l'indexeur.

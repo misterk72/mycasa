@@ -488,6 +488,10 @@ impl MyCasaApp {
     }
 
     fn preload_viewer_neighbors(&mut self, ctx: &egui::Context) {
+        if !self.viewer.can_preload_around_current() {
+            return;
+        }
+
         let Some(current_id) = self.viewer.current_photo_id() else {
             return;
         };
