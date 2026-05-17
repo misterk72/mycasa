@@ -351,6 +351,7 @@ impl ViewerState {
                     self.loading = false;
                     self.loaded_photo_id = Some(id);
                     self.full_texture = image.map(|image| {
+                        self.remember_preloaded_image(id, image.clone());
                         let texture_name = format!("viewer-photo-{}", id);
                         ctx.load_texture(texture_name, image, TextureOptions::LINEAR)
                     });
@@ -371,7 +372,7 @@ impl ViewerState {
             return;
         }
 
-        if let Some(image) = self.take_preloaded_image(photo.id) {
+        if let Some(image) = self.cached_viewer_image(photo.id) {
             let texture_name = format!("viewer-photo-{}", photo.id);
             self.full_texture = Some(ctx.load_texture(texture_name, image, TextureOptions::LINEAR));
             self.loaded_photo_id = Some(photo.id);
@@ -382,6 +383,7 @@ impl ViewerState {
         }
 
         if self.loading || self.pending_full_loads.contains(&photo.id) {
+            self.load_preview_from_cache(ctx, photo);
             self.loading = true;
             return;
         }
@@ -425,9 +427,30 @@ impl ViewerState {
         self.evict_old_preloaded_images();
     }
 
-    fn take_preloaded_image(&mut self, id: i64) -> Option<ColorImage> {
+    fn cached_viewer_image(&mut self, id: i64) -> Option<ColorImage> {
+        let image = self.preloaded_images.get(&id).cloned();
+        if image.is_some() {
+            self.mark_preloaded_image_recent(id);
+        }
+        image
+    }
+
+    fn mark_preloaded_image_recent(&mut self, id: i64) {
         self.preload_order.retain(|cached_id| *cached_id != id);
-        self.preloaded_images.remove(&id)
+        self.preload_order.push_back(id);
+    }
+
+    fn load_preview_from_cache(&mut self, ctx: &egui::Context, photo: &Photo) {
+        if self.visible_texture().is_some() {
+            return;
+        }
+
+        if let Some(preview) = load_cached_thumbnail_image(photo) {
+            let texture_name = format!("viewer-preview-{}", photo.id);
+            self.preview_texture =
+                Some(ctx.load_texture(texture_name, preview, TextureOptions::LINEAR));
+            ctx.request_repaint();
+        }
     }
 
     fn evict_old_preloaded_images(&mut self) {
@@ -818,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn viewer_uses_preloaded_image_without_starting_load() {
+    fn viewer_uses_preloaded_image_without_consuming_cache() {
         let ctx = egui::Context::default();
         let photo = photo_for_test(7);
         let mut viewer = ViewerState::default();
@@ -830,8 +853,29 @@ mod tests {
         assert_eq!(viewer.loaded_photo_id, Some(photo.id));
         assert!(!viewer.loading);
         assert!(viewer.full_texture.is_some());
-        assert!(!viewer.preloaded_images.contains_key(&photo.id));
+        assert!(viewer.preloaded_images.contains_key(&photo.id));
         assert!(!viewer.pending_full_loads.contains(&photo.id));
+    }
+
+    #[test]
+    fn viewer_keeps_current_full_image_in_memory_cache() {
+        let ctx = egui::Context::default();
+        let photo = photo_for_test(11);
+        let mut viewer = ViewerState::default();
+        viewer.open(photo.clone());
+
+        viewer
+            .sender
+            .send(ViewerMessage::Full {
+                id: photo.id,
+                image: Some(color_image_for_test(11)),
+            })
+            .unwrap();
+        viewer.poll_loaded(&ctx);
+
+        assert_eq!(viewer.loaded_photo_id, Some(photo.id));
+        assert!(viewer.full_texture.is_some());
+        assert!(viewer.preloaded_images.contains_key(&photo.id));
     }
 
     #[test]
