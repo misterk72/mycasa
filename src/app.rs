@@ -22,6 +22,7 @@ const THUMBNAIL_SIZE: f32 = 132.0;
 const TILE_PADDING: f32 = 8.0;
 const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
+const CHRONO_SECTION_HEIGHT: f32 = 44.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -41,7 +42,7 @@ enum LibraryViewMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChronologicalGridRow {
-    Section(String),
+    Section { label: String, photos: Vec<usize> },
     Photos(Vec<usize>),
 }
 
@@ -504,38 +505,45 @@ impl MyCasaApp {
 
         ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show_rows(
-                ui,
-                TILE_HEIGHT + TILE_PADDING,
-                rows.len(),
-                |ui, row_range| {
-                    for row_index in row_range {
-                        match &rows[row_index] {
-                            ChronologicalGridRow::Section(label) => {
-                                self.chronology_section_header(ui, label);
-                            }
-                            ChronologicalGridRow::Photos(photo_indices) => {
-                                ui.horizontal(|ui| {
-                                    for photo_index in photo_indices {
-                                        let photo = self.photos[*photo_index].clone();
-                                        self.photo_tile(ui, &photo);
-                                    }
-                                });
-                            }
+            .show_viewport(ui, |ui, viewport| {
+                let row_layout = chronological_row_layout(&rows);
+                let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
+                ui.set_min_height(total_height);
+
+                let origin = ui.min_rect().min;
+                for (row_index, (top, bottom)) in row_layout.iter().enumerate() {
+                    if *bottom < viewport.top() || *top > viewport.bottom() {
+                        continue;
+                    }
+
+                    let row_rect = egui::Rect::from_min_size(
+                        egui::pos2(origin.x, origin.y + *top),
+                        Vec2::new(grid_width, bottom - top),
+                    );
+                    match &rows[row_index] {
+                        ChronologicalGridRow::Section { label, photos } => {
+                            self.chronology_section_row(ui, row_rect, label, photos);
+                        }
+                        ChronologicalGridRow::Photos(photo_indices) => {
+                            self.chronology_photo_row(ui, row_rect, photo_indices);
                         }
                     }
-                },
-            );
+                }
+            });
     }
 
-    fn chronology_section_header(&self, ui: &mut egui::Ui, label: &str) {
-        let available = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(available, TILE_HEIGHT + TILE_PADDING),
-            Sense::hover(),
+    fn chronology_section_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        label: &str,
+        photo_indices: &[usize],
+    ) {
+        let available = rect.width();
+        let header_rect = egui::Rect::from_min_size(
+            rect.min + Vec2::new(0.0, 2.0),
+            Vec2::new(available, CHRONO_SECTION_HEIGHT),
         );
-        let header_rect =
-            egui::Rect::from_min_size(rect.min + Vec2::new(0.0, 10.0), Vec2::new(available, 42.0));
         ui.painter()
             .rect_filled(header_rect, 0.0, Color32::from_rgb(238, 239, 239));
         ui.painter().line_segment(
@@ -549,6 +557,42 @@ impl MyCasaApp {
             egui::TextStyle::Heading.resolve(ui.style()),
             Color32::from_rgb(174, 112, 45),
         );
+
+        let photos_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), header_rect.bottom() + TILE_PADDING),
+            Vec2::new(available, TILE_HEIGHT),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(photos_rect)
+                .layout(Layout::left_to_right(Align::Min)),
+            |ui| {
+                self.render_chronology_photos(ui, photo_indices);
+            },
+        );
+    }
+
+    fn chronology_photo_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        photo_indices: &[usize],
+    ) {
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::left_to_right(Align::Min)),
+            |ui| {
+                self.render_chronology_photos(ui, photo_indices);
+            },
+        );
+    }
+
+    fn render_chronology_photos(&mut self, ui: &mut egui::Ui, photo_indices: &[usize]) {
+        for photo_index in photo_indices {
+            let photo = self.photos[*photo_index].clone();
+            self.photo_tile(ui, &photo);
+        }
     }
 
     fn handle_viewer_keyboard(&mut self, ctx: &egui::Context) {
@@ -816,7 +860,10 @@ fn retrochronological_grid_rows(photos: &[Photo], columns: usize) -> Vec<Chronol
         let section = photo_section_label(&photos[photo_index]);
         if current_section.as_deref() != Some(section.as_str()) {
             push_photo_rows(&mut rows, &mut current_photos, columns);
-            rows.push(ChronologicalGridRow::Section(section.clone()));
+            rows.push(ChronologicalGridRow::Section {
+                label: section.clone(),
+                photos: Vec::new(),
+            });
             current_section = Some(section);
         }
         current_photos.push(photo_index);
@@ -831,10 +878,43 @@ fn push_photo_rows(
     photo_indices: &mut Vec<usize>,
     columns: usize,
 ) {
-    for chunk in photo_indices.chunks(columns) {
+    if let Some(first_row) = photo_indices.get(..photo_indices.len().min(columns)) {
+        if let Some(ChronologicalGridRow::Section { photos, .. }) = rows.last_mut() {
+            photos.extend_from_slice(first_row);
+        }
+    }
+
+    for chunk in photo_indices[photo_indices.len().min(columns)..].chunks(columns) {
         rows.push(ChronologicalGridRow::Photos(chunk.to_vec()));
     }
     photo_indices.clear();
+}
+
+fn chrono_section_row_height() -> f32 {
+    CHRONO_SECTION_HEIGHT + TILE_PADDING + TILE_HEIGHT
+}
+
+fn chrono_photo_row_height() -> f32 {
+    TILE_HEIGHT + TILE_PADDING
+}
+
+fn chronological_row_height(row: &ChronologicalGridRow) -> f32 {
+    match row {
+        ChronologicalGridRow::Section { .. } => chrono_section_row_height(),
+        ChronologicalGridRow::Photos(_) => chrono_photo_row_height(),
+    }
+}
+
+fn chronological_row_layout(rows: &[ChronologicalGridRow]) -> Vec<(f32, f32)> {
+    let mut top = 0.0;
+    rows.iter()
+        .map(|row| {
+            let bottom = top + chronological_row_height(row);
+            let bounds = (top, bottom);
+            top = bottom;
+            bounds
+        })
+        .collect()
 }
 
 fn photo_time_key(photo: &Photo) -> i64 {
@@ -1007,12 +1087,18 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ChronologicalGridRow::Section("Mars 2024".to_owned()),
-                ChronologicalGridRow::Photos(vec![1]),
-                ChronologicalGridRow::Section("Fevrier 2024".to_owned()),
-                ChronologicalGridRow::Photos(vec![2]),
-                ChronologicalGridRow::Section("Janvier 2024".to_owned()),
-                ChronologicalGridRow::Photos(vec![0]),
+                ChronologicalGridRow::Section {
+                    label: "Mars 2024".to_owned(),
+                    photos: vec![1],
+                },
+                ChronologicalGridRow::Section {
+                    label: "Fevrier 2024".to_owned(),
+                    photos: vec![2],
+                },
+                ChronologicalGridRow::Section {
+                    label: "Janvier 2024".to_owned(),
+                    photos: vec![0],
+                },
             ]
         );
     }
@@ -1031,12 +1117,39 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ChronologicalGridRow::Section("Janvier 2027".to_owned()),
-                ChronologicalGridRow::Photos(vec![1]),
-                ChronologicalGridRow::Section("Avril 2025".to_owned()),
-                ChronologicalGridRow::Photos(vec![0]),
+                ChronologicalGridRow::Section {
+                    label: "Janvier 2027".to_owned(),
+                    photos: vec![1],
+                },
+                ChronologicalGridRow::Section {
+                    label: "Avril 2025".to_owned(),
+                    photos: vec![0],
+                },
             ]
         );
+    }
+
+    #[test]
+    fn chronological_layout_uses_compact_section_rows_and_normal_photo_rows() {
+        let rows = vec![
+            ChronologicalGridRow::Section {
+                label: "Mars 2024".to_owned(),
+                photos: vec![0, 1],
+            },
+            ChronologicalGridRow::Photos(vec![2, 3]),
+        ];
+
+        let layout = chronological_row_layout(&rows);
+
+        assert_eq!(layout[0], (0.0, chrono_section_row_height()));
+        assert_eq!(
+            layout[1],
+            (
+                chrono_section_row_height(),
+                chrono_section_row_height() + chrono_photo_row_height()
+            )
+        );
+        assert!(chrono_section_row_height() < (TILE_HEIGHT + TILE_PADDING) * 2.0);
     }
 
     fn photo_for_test(id: i64) -> Photo {
