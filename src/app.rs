@@ -33,7 +33,8 @@ const INERTIAL_SCROLL_MAX_SPEED: f32 = 5200.0;
 const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.22;
 const INERTIAL_SCROLL_STOP_SPEED: f32 = 18.0;
 const INERTIAL_SCROLL_EXTERNAL_SYNC_EPSILON: f32 = 1.0;
-const VIEWER_WHEEL_NAVIGATION_THRESHOLD: f32 = 48.0;
+const VIEWER_WHEEL_NAVIGATION_THRESHOLD: f32 = 90.0;
+const VIEWER_WHEEL_NAVIGATION_COOLDOWN_SECONDS: f32 = 0.16;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -64,6 +65,12 @@ struct InertialScrollState {
     max_offset: f32,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct ViewerWheelNavigationState {
+    accumulated_delta: f32,
+    cooldown_seconds: f32,
+}
+
 pub struct MyCasaApp {
     catalog: Result<Catalog, CatalogError>,
     indexer: Indexer,
@@ -76,6 +83,7 @@ pub struct MyCasaApp {
     selected_photo: Option<i64>,
     library_view_mode: LibraryViewMode,
     main_scroll: InertialScrollState,
+    viewer_wheel_navigation: ViewerWheelNavigationState,
     status: String,
     search: String,
     search_debouncer: Debouncer,
@@ -124,6 +132,7 @@ impl MyCasaApp {
             selected_photo: None,
             library_view_mode: LibraryViewMode::RetroChronological,
             main_scroll: InertialScrollState::default(),
+            viewer_wheel_navigation: ViewerWheelNavigationState::default(),
             status,
             search: String::new(),
             search_debouncer: Debouncer::new(SEARCH_DEBOUNCE),
@@ -677,6 +686,7 @@ impl MyCasaApp {
 
         if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.viewer.close();
+            self.viewer_wheel_navigation.reset();
             return;
         }
 
@@ -691,10 +701,10 @@ impl MyCasaApp {
             } else if input.key_pressed(egui::Key::ArrowRight) {
                 Some(NavigationDirection::Next)
             } else {
-                viewer_wheel_navigation_direction(effective_wheel_delta(
-                    input.raw_scroll_delta.y,
-                    input.smooth_scroll_delta.y,
-                ))
+                let wheel_delta =
+                    effective_wheel_delta(input.raw_scroll_delta.y, input.smooth_scroll_delta.y);
+                self.viewer_wheel_navigation
+                    .tick(wheel_delta, input.stable_dt.clamp(1.0 / 240.0, 0.1))
             }
         });
 
@@ -713,6 +723,7 @@ impl MyCasaApp {
                 self.navigate_viewer(current_id, direction);
             }
             ViewerNavigationRequest::Photo(photo_id) => {
+                self.viewer_wheel_navigation.reset();
                 self.open_viewer_photo(photo_id);
             }
         }
@@ -1006,6 +1017,35 @@ impl InertialScrollState {
         if self.offset <= 0.0 || self.offset >= self.max_offset {
             self.velocity = 0.0;
         }
+    }
+}
+
+impl ViewerWheelNavigationState {
+    fn tick(&mut self, wheel_delta: f32, dt: f32) -> Option<NavigationDirection> {
+        self.cooldown_seconds = (self.cooldown_seconds - dt).max(0.0);
+
+        if wheel_delta.abs() <= f32::EPSILON {
+            return None;
+        }
+
+        if self.accumulated_delta.signum() != wheel_delta.signum() {
+            self.accumulated_delta = 0.0;
+        }
+        self.accumulated_delta += wheel_delta;
+
+        if self.cooldown_seconds > 0.0 {
+            return None;
+        }
+
+        let direction = viewer_wheel_navigation_direction(self.accumulated_delta)?;
+        self.accumulated_delta = 0.0;
+        self.cooldown_seconds = VIEWER_WHEEL_NAVIGATION_COOLDOWN_SECONDS;
+        Some(direction)
+    }
+
+    fn reset(&mut self) {
+        self.accumulated_delta = 0.0;
+        self.cooldown_seconds = 0.0;
     }
 }
 
@@ -1422,6 +1462,45 @@ mod tests {
             Some(NavigationDirection::Previous)
         );
         assert_eq!(viewer_wheel_navigation_direction(-4.0), None);
+    }
+
+    #[test]
+    fn viewer_wheel_navigation_accumulates_smooth_wheel_deltas() {
+        let mut wheel = ViewerWheelNavigationState::default();
+
+        assert_eq!(wheel.tick(-30.0, 1.0 / 60.0), None);
+        assert_eq!(wheel.tick(-30.0, 1.0 / 60.0), None);
+        assert_eq!(
+            wheel.tick(-30.0, 1.0 / 60.0),
+            Some(NavigationDirection::Next)
+        );
+    }
+
+    #[test]
+    fn viewer_wheel_navigation_rate_limits_repeated_notches() {
+        let mut wheel = ViewerWheelNavigationState::default();
+
+        assert_eq!(
+            wheel.tick(-120.0, 1.0 / 60.0),
+            Some(NavigationDirection::Next)
+        );
+        assert_eq!(wheel.tick(-120.0, 1.0 / 60.0), None);
+        assert_eq!(
+            wheel.tick(-120.0, VIEWER_WHEEL_NAVIGATION_COOLDOWN_SECONDS),
+            Some(NavigationDirection::Next)
+        );
+    }
+
+    #[test]
+    fn viewer_wheel_navigation_direction_change_resets_accumulator() {
+        let mut wheel = ViewerWheelNavigationState::default();
+
+        assert_eq!(wheel.tick(-60.0, 1.0 / 60.0), None);
+        assert_eq!(wheel.tick(60.0, 1.0 / 60.0), None);
+        assert_eq!(
+            wheel.tick(60.0, 1.0 / 60.0),
+            Some(NavigationDirection::Previous)
+        );
     }
 
     #[test]

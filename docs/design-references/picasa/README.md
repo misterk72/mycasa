@@ -13,11 +13,14 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - `08-dialog-reference.png` : dialogue secondaire de reference.
 - `09-dialog-folder-monitoring.png` : dialogue de surveillance de dossiers.
 - `10-library-and-edit-comparison.png` : comparaison phototheque et edition sur grand ecran.
+- `11-library-flat-chronological-reference.png` : phototheque Picasa 3 en vue plate/rétrochronologique, dossiers groupes par annees dans la sidebar et grille principale dense.
 
 ## Decisions UI A Reprendre
 - Barre de menu fine en haut, puis toolbar grise avec boutons texte + petites icones.
 - Sidebar claire a gauche, sections Albums/Dossiers/Personnes repliables.
 - Grille centrale type lightbox, fond blanc casse, miniatures avec ombre legere.
+- Vue plate/rétrochronologique : separateurs d'annee dans la sidebar, contenu central regroupe par dossier/date, grille dense avec marges regulieres.
+- Barre de filtres Picasa 3 : petite bande centrale sous la toolbar avec icones de filtre, curseur et recherche longue a droite.
 - Bande bleue de statut au-dessus du tray bas.
 - Tray bas pour selection et actions rapides : Album Web, E-mail, Imprimer, Exporter.
 - Vue edition/viewer avec grand canevas image et panneau outil lateral.

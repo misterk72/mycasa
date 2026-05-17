@@ -39,9 +39,9 @@ const VIEWER_MATTE_PADDING: f32 = 8.0;
 const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
 const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
-const VIEWER_FILMSTRIP_RADIUS: usize = 4;
-const VIEWER_FILMSTRIP_THUMB_SIZE: f32 = 28.0;
-const VIEWER_FILMSTRIP_THUMB_GAP: f32 = 4.0;
+const VIEWER_FILMSTRIP_RADIUS: usize = 2;
+const VIEWER_FILMSTRIP_THUMB_SIZE: f32 = 30.0;
+const VIEWER_FILMSTRIP_THUMB_GAP: f32 = 5.0;
 const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 9;
 const VIEWER_MAX_PENDING_FULL_LOADS: usize = 4;
 const VIEWER_DISK_CACHE_DIR: &str = "viewer";
@@ -1110,6 +1110,15 @@ mod tests {
         let ids: Vec<i64> = filmstrip.iter().map(|photo| photo.id).collect();
 
         assert_eq!(ids, vec![3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn viewer_default_filmstrip_shows_picasa_like_compact_preview_count() {
+        let photos: Vec<Photo> = (1..=10).map(photo_for_test).collect();
+
+        let filmstrip = viewer_filmstrip_photos(&photos, 5, VIEWER_FILMSTRIP_RADIUS);
+
+        assert_eq!(filmstrip.len(), 5);
     }
 
     #[test]
