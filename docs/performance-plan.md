@@ -26,7 +26,7 @@ Valider rapidement que MyCasa peut afficher un dossier photo NAS avec une experi
 1. Virtualiser la grille avec `show_rows`.
 2. Tester et exposer les metriques de miniatures.
 3. Ameliorer le rendu des tuiles et de la barre d'outils.
-4. Viewer rapide : cache memoire des previews viewer, prechargement precedent/suivant, puis mesure des hits/misses.
+4. Viewer rapide : cache memoire des previews viewer, prechargement autour de la photo courante, puis mesure des hits/misses.
 5. Support HEIC/HEIF : choisir un decodeur portable Windows/Linux avant indexation et affichage complets.
 
 ## Regle TDD
@@ -36,7 +36,7 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Grille virtualisee avec calcul de colonnes, lignes et plages d'items couvert par tests unitaires.
 - Cache disque de miniatures teste : invalidation par taille/mtime, generation initiale, relecture cache sans original disponible, echec explicite si cache et original absents.
 - Concurrence miniatures limitee a 3 workers pour reduire la pression sur un NAS.
-- Viewer navigable au clavier avec fleches gauche/droite, prechargement des miniatures voisines et prechargement memoire des images viewer precedente/suivante.
+- Viewer navigable au clavier avec fleches gauche/droite, prechargement des miniatures voisines et prechargement memoire des images viewer dans un rayon de 3 photos autour de la courante.
 - Libelles de tuiles tronques au milieu pour eviter les debordements visuels.
 - Ecritures catalogue regroupees en transactions par lot pour reduire les pauses pendant l'indexation.
 - File evenements indexation bornee a 512 messages pour appliquer une pression retour au scan.
@@ -47,5 +47,5 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Index SQLite explicites sur chargement recent, recherche fichier/dossier et visages par photo.
 - Recherche debouncee a 250 ms pour eviter une requete catalogue a chaque frappe.
 - Viewer charge une preview depuis le cache miniature avant l image 1600 px, ignore les reponses obsoletes, et adapte sa taille initiale au ratio de la photo.
-- Le viewer conserve un petit cache memoire des images 1600 px prechargees pour eviter le decodage NAS lors de la navigation precedente/suivante.
+- Le viewer conserve un cache memoire borne des images 1600 px prechargees et limite les decodages concurrents pour eviter de saturer le NAS.
 - Le format HEIC/HEIF n'est pas encore pris en charge par le decodeur actuel ; il doit etre ajoute avec un backend natif portable et teste avant activation dans l'indexeur.

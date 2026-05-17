@@ -24,6 +24,7 @@ const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+const VIEWER_PRELOAD_RADIUS: usize = 3;
 const PICASA_BLUE: Color32 = Color32::from_rgb(59, 139, 190);
 const PANEL_BG: Color32 = Color32::from_rgb(231, 235, 239);
 const LIGHTBOX_BG: Color32 = Color32::from_rgb(250, 250, 248);
@@ -491,15 +492,7 @@ impl MyCasaApp {
             return;
         };
 
-        let neighbor_ids = [
-            adjacent_photo_id(&self.photos, current_id, NavigationDirection::Previous),
-            adjacent_photo_id(&self.photos, current_id, NavigationDirection::Next),
-        ];
-        let neighbors: Vec<Photo> = neighbor_ids
-            .into_iter()
-            .flatten()
-            .filter_map(|id| self.photos.iter().find(|photo| photo.id == id).cloned())
-            .collect();
+        let neighbors = viewer_preload_candidates(&self.photos, current_id, VIEWER_PRELOAD_RADIUS);
 
         for photo in &neighbors {
             let _ = self.thumbnails.state_for(ctx, photo);
@@ -699,6 +692,23 @@ pub fn library_grid_width(panel_rect: egui::Rect) -> f32 {
     panel_rect.width()
 }
 
+fn viewer_preload_candidates(photos: &[Photo], current_id: i64, radius: usize) -> Vec<Photo> {
+    let Some(current_index) = photos.iter().position(|photo| photo.id == current_id) else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    for offset in 1..=radius {
+        if let Some(index) = current_index.checked_sub(offset) {
+            candidates.push(photos[index].clone());
+        }
+        if let Some(photo) = photos.get(current_index + offset) {
+            candidates.push(photo.clone());
+        }
+    }
+    candidates
+}
+
 impl eframe::App for MyCasaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_frame_metrics();
@@ -756,5 +766,41 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1460.0, 900.0));
 
         assert_eq!(library_grid_width(rect), 1460.0);
+    }
+
+    #[test]
+    fn viewer_preload_candidates_cover_radius_around_current_photo() {
+        let photos: Vec<Photo> = (1..=7).map(photo_for_test).collect();
+
+        let candidates = viewer_preload_candidates(&photos, 4, 3);
+        let ids: Vec<i64> = candidates.iter().map(|photo| photo.id).collect();
+
+        assert_eq!(ids, vec![3, 5, 2, 6, 1, 7]);
+    }
+
+    #[test]
+    fn viewer_preload_candidates_stop_at_edges() {
+        let photos: Vec<Photo> = (1..=4).map(photo_for_test).collect();
+
+        let candidates = viewer_preload_candidates(&photos, 1, 3);
+        let ids: Vec<i64> = candidates.iter().map(|photo| photo.id).collect();
+
+        assert_eq!(ids, vec![2, 3, 4]);
+    }
+
+    fn photo_for_test(id: i64) -> Photo {
+        Photo {
+            id,
+            path: PathBuf::from(format!("/tmp/photo-{id}.jpg")),
+            file_size: None,
+            modified_at: None,
+            width: None,
+            height: None,
+            captured_at: None,
+            picasa_caption: None,
+            picasa_keywords: None,
+            picasa_starred: false,
+            picasa_face_count: 0,
+        }
     }
 }

@@ -36,7 +36,8 @@ const VIEWER_MATTE_PADDING: f32 = 8.0;
 const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
 const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
-const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 5;
+const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 9;
+const VIEWER_MAX_PENDING_FULL_LOADS: usize = 4;
 #[cfg(test)]
 const VIEWER_PANEL_GAP: f32 = 8.0;
 
@@ -125,6 +126,9 @@ impl ViewerState {
     pub fn preload_photos(&mut self, ctx: &egui::Context, photos: &[Photo]) {
         let current_id = self.current_photo_id();
         for photo in photos {
+            if self.pending_full_loads.len() >= VIEWER_MAX_PENDING_FULL_LOADS {
+                break;
+            }
             if current_id == Some(photo.id)
                 || self.preloaded_images.contains_key(&photo.id)
                 || self.pending_full_loads.contains(&photo.id)
@@ -900,6 +904,20 @@ mod tests {
         assert!(!viewer.pending_full_loads.contains(&1));
         assert!(viewer.pending_full_loads.contains(&3));
         assert!(viewer.pending_full_loads.contains(&4));
+    }
+
+    #[test]
+    fn viewer_preload_limits_pending_full_loads() {
+        let ctx = egui::Context::default();
+        let mut viewer = ViewerState::default();
+        let photos: Vec<Photo> = (1..=10).map(photo_for_test).collect();
+
+        viewer.preload_photos(&ctx, &photos);
+
+        assert_eq!(
+            viewer.pending_full_loads.len(),
+            VIEWER_MAX_PENDING_FULL_LOADS
+        );
     }
 
     #[test]
