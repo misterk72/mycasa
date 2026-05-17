@@ -26,6 +26,7 @@ const TILE_PADDING: f32 = 8.0;
 const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
+const TOP_CHROME_HEIGHT: f32 = 86.0;
 const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 0.9;
 const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 0.32;
 const INERTIAL_SCROLL_MIN_FLING_SPEED: f32 = 600.0;
@@ -315,6 +316,31 @@ impl MyCasaApp {
                 }
             });
 
+        let years = chronological_sidebar_years(&self.photos);
+        egui::CollapsingHeader::new(format!("Chronologie ({})", years.len()))
+            .default_open(self.library_view_mode == LibraryViewMode::RetroChronological)
+            .show(ui, |ui| {
+                if years.is_empty() {
+                    ui.label("Aucune date");
+                } else {
+                    for year in years {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("▾").size(12.0).color(Color32::from_gray(110)));
+                            if ui
+                                .selectable_label(
+                                    self.library_view_mode == LibraryViewMode::RetroChronological,
+                                    year.to_string(),
+                                )
+                                .clicked()
+                            {
+                                self.library_view_mode = LibraryViewMode::RetroChronological;
+                                self.status = format!("Chronologie: {year}");
+                            }
+                        });
+                    }
+                }
+            });
+
         egui::CollapsingHeader::new(format!("Dossiers ({})", self.folders.len()))
             .default_open(true)
             .show(ui, |ui| {
@@ -405,15 +431,34 @@ impl MyCasaApp {
             if ui.button("Scanner dossier courant").clicked() {
                 self.scan_current_dir();
             }
+        });
+        ui.add_space(2.0);
+        self.ui_filter_strip(ui);
+    }
+
+    fn ui_filter_strip(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.add_space(260.0);
+            ui.label(RichText::new("Filtres").color(Color32::from_gray(95)));
+            for label in picasa_filter_button_labels() {
+                if ui.small_button(label).clicked() {
+                    self.status = format!("Filtre {label}: a implementer");
+                }
+            }
+            let mut filter_strength = 0.0_f32;
+            let _ = ui.add_sized(
+                [96.0, 18.0],
+                egui::Slider::new(&mut filter_strength, 0.0..=1.0),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let response = ui.add_sized(
-                    [260.0, 22.0],
+                    [360.0, 22.0],
                     egui::TextEdit::singleline(&mut self.search).hint_text("Rechercher"),
                 );
                 if response.changed() {
                     self.search_debouncer.mark_changed(Instant::now());
                 }
-                if ui.button("Rechercher").clicked() {
+                if ui.small_button("🔎").clicked() {
                     self.refresh_photos();
                 }
             });
@@ -1207,6 +1252,29 @@ fn photo_section_label(photo: &Photo) -> String {
     }
 }
 
+fn chronological_sidebar_years(photos: &[Photo]) -> Vec<i32> {
+    let mut years: Vec<i32> = photos
+        .iter()
+        .filter_map(|photo| {
+            let timestamp = photo_time_key(photo);
+            if timestamp <= 0 {
+                return None;
+            }
+            match Utc.timestamp_opt(timestamp, 0) {
+                LocalResult::Single(datetime) => Some(datetime.year()),
+                _ => None,
+            }
+        })
+        .collect();
+    years.sort_unstable_by(|left, right| right.cmp(left));
+    years.dedup();
+    years
+}
+
+fn picasa_filter_button_labels() -> [&'static str; 5] {
+    ["★", "↑", "👤", "▦", "⌖"]
+}
+
 fn month_name(month: u32) -> &'static str {
     match month {
         1 => "Janvier",
@@ -1256,7 +1324,7 @@ impl eframe::App for MyCasaApp {
         } else {
             self.viewer.poll_background_results();
             egui::TopBottomPanel::top("picasa_top_chrome")
-                .exact_height(60.0)
+                .exact_height(TOP_CHROME_HEIGHT)
                 .show(ctx, |ui| self.ui_top_chrome(ui));
 
             egui::SidePanel::left("sidebar")
@@ -1616,6 +1684,26 @@ mod tests {
             )
         );
         assert!(chrono_section_row_height() < (TILE_HEIGHT + TILE_PADDING) * 2.0);
+    }
+
+    #[test]
+    fn chronological_sidebar_years_are_sorted_descending_and_unique() {
+        let mut photo_2024 = photo_for_test(1);
+        photo_2024.modified_at = Some(1_704_067_200);
+        let mut photo_2025 = photo_for_test(2);
+        photo_2025.captured_at = Some("2025-04-03T10:00:00Z".to_owned());
+        let mut same_2025 = photo_for_test(3);
+        same_2025.modified_at = Some(1_746_144_000);
+
+        assert_eq!(
+            chronological_sidebar_years(&[photo_2024, photo_2025, same_2025]),
+            vec![2025, 2024]
+        );
+    }
+
+    #[test]
+    fn picasa_filter_strip_uses_reference_style_button_count() {
+        assert_eq!(picasa_filter_button_labels().len(), 5);
     }
 
     fn photo_for_test(id: i64) -> Photo {

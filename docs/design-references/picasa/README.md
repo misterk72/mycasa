@@ -32,3 +32,4 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - Viewer edition : panneau outils gauche, filmstrip haut et canevas gris central.
 - Viewer clair : fond gris Picasa, panneau outils pale et image centrale plus grande.
 - Viewer integre : la vue edition remplace la phototheque au lieu de flotter au-dessus.
+- Phototheque : section Chronologie dans la sidebar et bande Filtres/Search inspiree Picasa 3.
