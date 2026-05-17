@@ -26,12 +26,13 @@ const TILE_PADDING: f32 = 8.0;
 const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
-const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 1.25;
-const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 2.8;
-const INERTIAL_SCROLL_MIN_FLING_SPEED: f32 = 2200.0;
-const INERTIAL_SCROLL_MAX_SPEED: f32 = 9000.0;
-const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.32;
-const INERTIAL_SCROLL_STOP_SPEED: f32 = 24.0;
+const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 0.9;
+const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 0.38;
+const INERTIAL_SCROLL_MIN_FLING_SPEED: f32 = 520.0;
+const INERTIAL_SCROLL_MAX_SPEED: f32 = 2400.0;
+const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.18;
+const INERTIAL_SCROLL_STOP_SPEED: f32 = 18.0;
+const INERTIAL_SCROLL_EXTERNAL_SYNC_EPSILON: f32 = 1.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -513,6 +514,7 @@ impl MyCasaApp {
             },
         );
         self.sync_main_scroll_from_output(
+            ui,
             output.state.offset.y,
             output.content_size,
             output.inner_rect,
@@ -551,6 +553,7 @@ impl MyCasaApp {
             }
         });
         self.sync_main_scroll_from_output(
+            ui,
             output.state.offset.y,
             output.content_size,
             output.inner_rect,
@@ -592,13 +595,15 @@ impl MyCasaApp {
 
     fn sync_main_scroll_from_output(
         &mut self,
+        ui: &egui::Ui,
         output_offset: f32,
         content_size: Vec2,
         inner_rect: egui::Rect,
     ) {
         let max_offset = (content_size.y - inner_rect.height()).max(0.0);
+        let external_scroll_active = ui.ctx().input(|input| input.pointer.any_down());
         self.main_scroll
-            .sync_from_scroll_area(output_offset, max_offset);
+            .sync_from_scroll_area(output_offset, max_offset, external_scroll_active);
     }
 
     fn chronology_section_row(
@@ -944,13 +949,26 @@ impl InertialScrollState {
         true
     }
 
-    fn sync_from_scroll_area(&mut self, offset: f32, max_offset: f32) {
+    fn sync_from_scroll_area(
+        &mut self,
+        offset: f32,
+        max_offset: f32,
+        external_scroll_active: bool,
+    ) {
         self.max_offset = max_offset.max(0.0);
-        if self.velocity.abs() <= INERTIAL_SCROLL_STOP_SPEED {
-            self.offset = clamp_scroll_offset(offset, self.max_offset);
+        let scroll_area_offset = clamp_scroll_offset(offset, self.max_offset);
+        let external_scroll_changed =
+            (scroll_area_offset - self.offset).abs() > INERTIAL_SCROLL_EXTERNAL_SYNC_EPSILON;
+
+        if external_scroll_active && external_scroll_changed {
+            self.offset = scroll_area_offset;
+            self.velocity = 0.0;
+        } else if self.velocity.abs() <= INERTIAL_SCROLL_STOP_SPEED {
+            self.offset = scroll_area_offset;
         } else {
             self.offset = clamp_scroll_offset(self.offset, self.max_offset);
         }
+
         if self.offset <= 0.0 || self.offset >= self.max_offset {
             self.velocity = 0.0;
         }
@@ -1213,6 +1231,7 @@ mod tests {
         assert!(scroll.offset > 0.0);
         assert!(scroll.velocity > 0.0);
         assert!(scroll.velocity >= INERTIAL_SCROLL_MIN_FLING_SPEED);
+        assert!(scroll.velocity <= INERTIAL_SCROLL_MAX_SPEED);
     }
 
     #[test]
@@ -1259,17 +1278,45 @@ mod tests {
     }
 
     #[test]
-    fn inertial_scroll_sync_does_not_erase_active_motion() {
+    fn inertial_scroll_sync_preserves_active_motion_when_offsets_match() {
         let mut scroll = InertialScrollState {
             offset: 180.0,
             velocity: 900.0,
             max_offset: 1000.0,
         };
 
-        scroll.sync_from_scroll_area(0.0, 1000.0);
+        scroll.sync_from_scroll_area(180.0, 1000.0, false);
 
         assert_eq!(scroll.offset, 180.0);
         assert_eq!(scroll.velocity, 900.0);
+    }
+
+    #[test]
+    fn inertial_scroll_sync_preserves_active_motion_when_output_lags() {
+        let mut scroll = InertialScrollState {
+            offset: 180.0,
+            velocity: 900.0,
+            max_offset: 1000.0,
+        };
+
+        scroll.sync_from_scroll_area(0.0, 1000.0, false);
+
+        assert_eq!(scroll.offset, 180.0);
+        assert_eq!(scroll.velocity, 900.0);
+    }
+
+    #[test]
+    fn inertial_scroll_sync_adopts_external_drag_offset() {
+        let mut scroll = InertialScrollState {
+            offset: 180.0,
+            velocity: 900.0,
+            max_offset: 1000.0,
+        };
+
+        scroll.sync_from_scroll_area(260.0, 1000.0, true);
+
+        assert_eq!(scroll.offset, 260.0);
+        assert_eq!(scroll.velocity, 0.0);
     }
 
     #[test]
