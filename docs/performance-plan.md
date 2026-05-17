@@ -49,4 +49,5 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Recherche debouncee a 250 ms pour eviter une requete catalogue a chaque frappe.
 - Viewer charge une preview depuis le cache miniature avant l image 1600 px, ignore les reponses obsoletes, et adapte sa taille initiale au ratio de la photo.
 - Le viewer conserve un cache memoire borne des images 1600 px prechargees, draine les decodages termines meme quand la phototheque est affichee, limite les decodages concurrents, et attend que l'image courante soit chargee avant de lancer les prechargements voisins.
+- Le viewer persiste aussi les images 1600 px dans un cache disque local pour eviter de relire et redecompiler les originaux NAS apres le premier affichage.
 - Le format HEIC/HEIF n'est pas encore pris en charge par le decodeur actuel ; il doit etre ajoute avec un backend natif portable et teste avant activation dans l'indexeur.

@@ -1,12 +1,15 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
     thread,
 };
 
+use directories::ProjectDirs;
 use egui::{
     Align, Color32, ColorImage, Layout, RichText, Stroke, TextureHandle, TextureOptions, Vec2,
 };
+use image::{ImageFormat, RgbaImage};
 
 use crate::catalog::Photo;
 use crate::thumbnails::load_cached_thumbnail_image;
@@ -38,6 +41,7 @@ const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
 const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 9;
 const VIEWER_MAX_PENDING_FULL_LOADS: usize = 4;
+const VIEWER_DISK_CACHE_DIR: &str = "viewer";
 #[cfg(test)]
 const VIEWER_PANEL_GAP: f32 = 8.0;
 
@@ -656,13 +660,73 @@ pub fn adjacent_photo_id(
 }
 
 fn load_viewer_image(photo: &Photo) -> Option<ColorImage> {
+    let cache_path = viewer_cache_path(photo);
+    if let Some(cache_path) = &cache_path {
+        if let Some(image) = load_viewer_cache_image(cache_path) {
+            return Some(image);
+        }
+    }
+
     let image = image::open(&photo.path)
         .ok()?
-        .thumbnail(VIEWER_IMAGE_MAX_EDGE, VIEWER_IMAGE_MAX_EDGE)
-        .to_rgba8();
+        .thumbnail(VIEWER_IMAGE_MAX_EDGE, VIEWER_IMAGE_MAX_EDGE);
+    if let Some(cache_path) = &cache_path {
+        if let Some(parent) = cache_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = image.save_with_format(cache_path, ImageFormat::Png);
+    }
+
+    Some(dynamic_to_color_image(image))
+}
+
+fn load_viewer_cache_image(path: &PathBuf) -> Option<ColorImage> {
+    if !path.exists() {
+        return None;
+    }
+
+    image::open(path).ok().map(dynamic_to_color_image)
+}
+
+fn dynamic_to_color_image(image: image::DynamicImage) -> ColorImage {
+    let image = image.to_rgba8();
+    rgba_to_color_image(image)
+}
+
+fn rgba_to_color_image(image: RgbaImage) -> ColorImage {
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.into_raw();
-    Some(ColorImage::from_rgba_unmultiplied(size, &pixels))
+    ColorImage::from_rgba_unmultiplied(size, &pixels)
+}
+
+fn viewer_cache_path(photo: &Photo) -> Option<PathBuf> {
+    Some(viewer_cache_dir()?.join(viewer_cache_file_name(photo)))
+}
+
+fn viewer_cache_dir() -> Option<PathBuf> {
+    let project_dirs = ProjectDirs::from("org", "MyCasa", "MyCasa")?;
+    let cache_dir = project_dirs.cache_dir().join(VIEWER_DISK_CACHE_DIR);
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    Some(cache_dir)
+}
+
+fn viewer_cache_file_name(photo: &Photo) -> String {
+    format!(
+        "{}-{}-{}-{}.png",
+        stable_viewer_cache_key(&photo.path.to_string_lossy()),
+        photo.modified_at.unwrap_or_default(),
+        photo.file_size.unwrap_or_default(),
+        VIEWER_IMAGE_MAX_EDGE
+    )
+}
+
+fn stable_viewer_cache_key(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[cfg(test)]
@@ -862,6 +926,54 @@ mod tests {
                 .contains_key(&(VIEWER_PRELOAD_CACHE_CAPACITY as i64 + 1))
         );
         assert_eq!(viewer.preloaded_images.len(), VIEWER_PRELOAD_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn viewer_disk_cache_file_name_changes_when_source_changes() {
+        let mut photo = photo_for_test(70);
+        photo.modified_at = Some(100);
+        photo.file_size = Some(200);
+        let initial = viewer_cache_file_name(&photo);
+
+        photo.modified_at = Some(101);
+        let changed_mtime = viewer_cache_file_name(&photo);
+        photo.modified_at = Some(100);
+        photo.file_size = Some(201);
+        let changed_size = viewer_cache_file_name(&photo);
+
+        assert_ne!(initial, changed_mtime);
+        assert_ne!(initial, changed_size);
+        assert!(initial.ends_with(&format!("-{VIEWER_IMAGE_MAX_EDGE}.png")));
+    }
+
+    #[test]
+    fn load_viewer_image_uses_disk_cache_without_original() {
+        let source_path = std::env::temp_dir().join(format!(
+            "mycasa-viewer-source-{}-{}.png",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let mut photo = photo_for_test(71);
+        photo.path = source_path.clone();
+        photo.file_size = Some(123);
+        photo.modified_at = Some(456);
+
+        let cache_path = viewer_cache_path(&photo).unwrap();
+        let _ = std::fs::remove_file(&cache_path);
+        let original = RgbaImage::from_pixel(80, 40, image::Rgba([10, 20, 30, 255]));
+        original
+            .save_with_format(&source_path, ImageFormat::Png)
+            .unwrap();
+
+        let first = load_viewer_image(&photo).unwrap();
+        assert!(cache_path.exists());
+
+        std::fs::remove_file(&source_path).unwrap();
+        let second = load_viewer_image(&photo).unwrap();
+
+        assert_eq!(first.size, second.size);
+
+        let _ = std::fs::remove_file(cache_path);
     }
 
     #[test]
