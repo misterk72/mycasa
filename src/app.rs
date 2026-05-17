@@ -492,7 +492,7 @@ impl MyCasaApp {
         let grid_width = library_grid_width(ui.max_rect());
         let columns = columns_for_width(grid_width, TILE_WIDTH);
         let total_rows = row_count(self.photos.len(), columns);
-        self.update_main_scroll(ui);
+        self.update_main_scroll(ui, total_rows as f32 * (TILE_HEIGHT + TILE_PADDING));
 
         let output = self.main_scroll_area().show_rows(
             ui,
@@ -521,11 +521,11 @@ impl MyCasaApp {
         let grid_width = library_grid_width(ui.max_rect());
         let columns = columns_for_width(grid_width, TILE_WIDTH);
         let rows = retrochronological_grid_rows(&self.photos, columns);
-        self.update_main_scroll(ui);
+        let row_layout = chronological_row_layout(&rows);
+        let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
+        self.update_main_scroll(ui, total_height);
 
         let output = self.main_scroll_area().show_viewport(ui, |ui, viewport| {
-            let row_layout = chronological_row_layout(&rows);
-            let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
             ui.set_min_height(total_height);
 
             let origin = ui.min_rect().min;
@@ -567,7 +567,9 @@ impl MyCasaApp {
             .vertical_scroll_offset(self.main_scroll.offset)
     }
 
-    fn update_main_scroll(&mut self, ui: &egui::Ui) {
+    fn update_main_scroll(&mut self, ui: &egui::Ui, content_height: f32) {
+        self.main_scroll
+            .set_max_offset(content_height - ui.available_height());
         let hovered = ui
             .ctx()
             .input(|input| input.pointer.hover_pos())
@@ -911,6 +913,14 @@ pub fn library_grid_width(panel_rect: egui::Rect) -> f32 {
 }
 
 impl InertialScrollState {
+    fn set_max_offset(&mut self, max_offset: f32) {
+        self.max_offset = max_offset.max(0.0);
+        self.offset = clamp_scroll_offset(self.offset, self.max_offset);
+        if self.max_offset <= 0.0 {
+            self.velocity = 0.0;
+        }
+    }
+
     fn tick(&mut self, wheel_delta: f32, dt: f32) -> bool {
         if wheel_delta.abs() > f32::EPSILON {
             let applied_delta = -wheel_delta * INERTIAL_SCROLL_WHEEL_MULTIPLIER;
@@ -1164,6 +1174,18 @@ mod tests {
             ..Default::default()
         };
 
+        let active = scroll.tick(-120.0, 1.0 / 60.0);
+
+        assert!(active);
+        assert!(scroll.offset > 0.0);
+        assert!(scroll.velocity > 0.0);
+    }
+
+    #[test]
+    fn inertial_scroll_initializes_bounds_before_first_wheel_tick() {
+        let mut scroll = InertialScrollState::default();
+
+        scroll.set_max_offset(1000.0);
         let active = scroll.tick(-120.0, 1.0 / 60.0);
 
         assert!(active);
