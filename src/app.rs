@@ -59,6 +59,12 @@ enum ChronologicalGridRow {
     Photos(Vec<usize>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ChronologicalSidebarSection {
+    year: i32,
+    months: Vec<u32>,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct InertialScrollState {
     offset: f32,
@@ -316,27 +322,45 @@ impl MyCasaApp {
                 }
             });
 
-        let years = chronological_sidebar_years(&self.photos);
-        egui::CollapsingHeader::new(format!("Chronologie ({})", years.len()))
+        let chronology_sections = chronological_sidebar_sections(&self.photos);
+        egui::CollapsingHeader::new(format!("Chronologie ({})", chronology_sections.len()))
             .default_open(self.library_view_mode == LibraryViewMode::RetroChronological)
             .show(ui, |ui| {
-                if years.is_empty() {
+                if chronology_sections.is_empty() {
                     ui.label("Aucune date");
                 } else {
-                    for year in years {
+                    for section in chronology_sections {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("▾").size(12.0).color(Color32::from_gray(110)));
                             if ui
                                 .selectable_label(
                                     self.library_view_mode == LibraryViewMode::RetroChronological,
-                                    year.to_string(),
+                                    section.year.to_string(),
                                 )
                                 .clicked()
                             {
                                 self.library_view_mode = LibraryViewMode::RetroChronological;
-                                self.status = format!("Chronologie: {year}");
+                                self.status = format!("Chronologie: {}", section.year);
                             }
                         });
+                        for month in section.months {
+                            ui.horizontal(|ui| {
+                                ui.add_space(18.0);
+                                ui.label(
+                                    RichText::new("▫").size(12.0).color(Color32::from_gray(120)),
+                                );
+                                let month_label = month_name(month);
+                                if ui
+                                    .selectable_label(false, month_label)
+                                    .on_hover_text(format!("{month_label} {}", section.year))
+                                    .clicked()
+                                {
+                                    self.library_view_mode = LibraryViewMode::RetroChronological;
+                                    self.status =
+                                        format!("Chronologie: {month_label} {}", section.year);
+                                }
+                            });
+                        }
                     }
                 }
             });
@@ -1265,8 +1289,16 @@ fn photo_section_label(photo: &Photo) -> String {
     }
 }
 
+#[cfg(test)]
 fn chronological_sidebar_years(photos: &[Photo]) -> Vec<i32> {
-    let mut years: Vec<i32> = photos
+    chronological_sidebar_sections(photos)
+        .into_iter()
+        .map(|section| section.year)
+        .collect()
+}
+
+fn chronological_sidebar_sections(photos: &[Photo]) -> Vec<ChronologicalSidebarSection> {
+    let mut entries: Vec<(i32, u32)> = photos
         .iter()
         .filter_map(|photo| {
             let timestamp = photo_time_key(photo);
@@ -1274,14 +1306,26 @@ fn chronological_sidebar_years(photos: &[Photo]) -> Vec<i32> {
                 return None;
             }
             match Utc.timestamp_opt(timestamp, 0) {
-                LocalResult::Single(datetime) => Some(datetime.year()),
+                LocalResult::Single(datetime) => Some((datetime.year(), datetime.month())),
                 _ => None,
             }
         })
         .collect();
-    years.sort_unstable_by(|left, right| right.cmp(left));
-    years.dedup();
-    years
+    entries.sort_unstable_by(|left, right| right.cmp(left));
+    entries.dedup();
+
+    let mut sections: Vec<ChronologicalSidebarSection> = Vec::new();
+    for (year, month) in entries {
+        if let Some(index) = sections.iter().position(|section| section.year == year) {
+            sections[index].months.push(month);
+        } else {
+            sections.push(ChronologicalSidebarSection {
+                year,
+                months: vec![month],
+            });
+        }
+    }
+    sections
 }
 
 fn picasa_filter_button_labels() -> [&'static str; 5] {
@@ -1735,6 +1779,37 @@ mod tests {
         assert_eq!(
             chronological_sidebar_years(&[photo_2024, photo_2025, same_2025]),
             vec![2025, 2024]
+        );
+    }
+
+    #[test]
+    fn chronological_sidebar_sections_include_months_per_year() {
+        let mut april_2026 = photo_for_test(1);
+        april_2026.captured_at = Some("2026-04-03T10:00:00Z".to_owned());
+        let mut duplicate_april_2026 = photo_for_test(2);
+        duplicate_april_2026.captured_at = Some("2026-04-10T10:00:00Z".to_owned());
+        let mut march_2026 = photo_for_test(3);
+        march_2026.captured_at = Some("2026-03-01T10:00:00Z".to_owned());
+        let mut december_2025 = photo_for_test(4);
+        december_2025.captured_at = Some("2025-12-24T10:00:00Z".to_owned());
+
+        assert_eq!(
+            chronological_sidebar_sections(&[
+                march_2026,
+                april_2026,
+                december_2025,
+                duplicate_april_2026,
+            ]),
+            vec![
+                ChronologicalSidebarSection {
+                    year: 2026,
+                    months: vec![4, 3],
+                },
+                ChronologicalSidebarSection {
+                    year: 2025,
+                    months: vec![12],
+                },
+            ]
         );
     }
 
