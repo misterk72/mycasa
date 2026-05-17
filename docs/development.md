@@ -27,8 +27,10 @@ Exceptions autorisees :
 ## Backlog Priorise
 1. Faisabilite fluidite : virtualiser la grille, mesurer cache/generation de miniatures et afficher un compteur FPS approximatif.
 2. Miniatures rapides : valider le cache disque par tests unitaires et eviter de regenerer les miniatures existantes.
-3. Esthetique Picasa-like : tuiles plus propres, toolbar compacte, et etats visuels de chargement/selection/hover.
-4. Import Picasa robuste : parser `contacts.xml`, relier les contacts aux faces `.picasa.ini`, puis exposer les noms dans le viewer.
-5. Catalogue exploitable : ajouter filtres favoris/visages/mots-cles et recherche par metadata Picasa.
+3. Viewer fluide : charger d'abord la preview cachee, precharger les images 1600 px precedente/suivante, mesurer les hits/misses du cache viewer, puis eviter les decodages repetes depuis le NAS.
+4. Formats modernes : ajouter HEIC/HEIF apres choix d'un decodeur portable Windows/Linux et couvrir indexation, miniatures et viewer par tests.
+5. Esthetique Picasa-like : tuiles plus propres, toolbar compacte, et etats visuels de chargement/selection/hover.
+6. Import Picasa robuste : parser `contacts.xml`, relier les contacts aux faces `.picasa.ini`, puis exposer les noms dans le viewer.
+7. Catalogue exploitable : ajouter filtres favoris/visages/mots-cles et recherche par metadata Picasa.
 
 Chaque item doit etre implemente par petits increments TDD avec un test rouge avant le code de production.

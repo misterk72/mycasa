@@ -1,5 +1,6 @@
 use std::{
-    sync::mpsc::{self, Receiver},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::mpsc::{self, Receiver, Sender},
     thread,
 };
 
@@ -35,6 +36,7 @@ const VIEWER_MATTE_PADDING: f32 = 8.0;
 const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
 const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
+const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 5;
 #[cfg(test)]
 const VIEWER_PANEL_GAP: f32 = 8.0;
 
@@ -44,14 +46,17 @@ pub enum NavigationDirection {
     Next,
 }
 
-#[derive(Default)]
 pub struct ViewerState {
     current: Option<Photo>,
     zoom: f32,
     loaded_photo_id: Option<i64>,
     preview_texture: Option<TextureHandle>,
     full_texture: Option<TextureHandle>,
-    receiver: Option<Receiver<ViewerMessage>>,
+    sender: Sender<ViewerMessage>,
+    receiver: Receiver<ViewerMessage>,
+    preloaded_images: HashMap<i64, ColorImage>,
+    preload_order: VecDeque<i64>,
+    pending_full_loads: HashSet<i64>,
     loading: bool,
 }
 
@@ -72,6 +77,25 @@ fn message_matches_current_photo(current_photo_id: Option<i64>, message: &Viewer
     current_photo_id == Some(message.id())
 }
 
+impl Default for ViewerState {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            current: None,
+            zoom: 1.0,
+            loaded_photo_id: None,
+            preview_texture: None,
+            full_texture: None,
+            sender,
+            receiver,
+            preloaded_images: HashMap::new(),
+            preload_order: VecDeque::new(),
+            pending_full_loads: HashSet::new(),
+            loading: false,
+        }
+    }
+}
+
 impl ViewerState {
     pub fn is_open(&self) -> bool {
         self.current.is_some()
@@ -83,7 +107,9 @@ impl ViewerState {
 
     pub fn close(&mut self) {
         self.current = None;
-        self.receiver = None;
+        self.loaded_photo_id = None;
+        self.preview_texture = None;
+        self.full_texture = None;
         self.loading = false;
     }
 
@@ -93,8 +119,21 @@ impl ViewerState {
         self.loaded_photo_id = None;
         self.preview_texture = None;
         self.full_texture = None;
-        self.receiver = None;
         self.loading = false;
+    }
+
+    pub fn preload_photos(&mut self, ctx: &egui::Context, photos: &[Photo]) {
+        let current_id = self.current_photo_id();
+        for photo in photos {
+            if current_id == Some(photo.id)
+                || self.preloaded_images.contains_key(&photo.id)
+                || self.pending_full_loads.contains(&photo.id)
+            {
+                continue;
+            }
+
+            self.spawn_full_load(ctx, photo.clone(), false);
+        }
     }
 
     pub fn show_docked(&mut self, ctx: &egui::Context) {
@@ -288,16 +327,18 @@ impl ViewerState {
     }
 
     fn poll_loaded(&mut self, ctx: &egui::Context) {
-        let Some(receiver) = &self.receiver else {
-            return;
-        };
-
         loop {
-            match receiver.try_recv() {
+            match self.receiver.try_recv() {
                 Ok(message)
                     if !message_matches_current_photo(self.current_photo_id(), &message) =>
                 {
-                    continue;
+                    let ViewerMessage::Full { id, image } = message else {
+                        continue;
+                    };
+                    self.pending_full_loads.remove(&id);
+                    if let Some(image) = image {
+                        self.remember_preloaded_image(id, image);
+                    }
                 }
                 Ok(ViewerMessage::Preview { id, image }) => {
                     let texture_name = format!("viewer-preview-{}", id);
@@ -306,8 +347,8 @@ impl ViewerState {
                     ctx.request_repaint();
                 }
                 Ok(ViewerMessage::Full { id, image }) => {
+                    self.pending_full_loads.remove(&id);
                     self.loading = false;
-                    self.receiver = None;
                     self.loaded_photo_id = Some(id);
                     self.full_texture = image.map(|image| {
                         let texture_name = format!("viewer-photo-{}", id);
@@ -319,7 +360,6 @@ impl ViewerState {
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.loading = false;
-                    self.receiver = None;
                     break;
                 }
             }
@@ -327,18 +367,40 @@ impl ViewerState {
     }
 
     fn ensure_loading(&mut self, ctx: &egui::Context, photo: &Photo) {
-        if self.loaded_photo_id == Some(photo.id) || self.loading {
+        if self.loaded_photo_id == Some(photo.id) {
             return;
         }
 
-        let (sender, receiver) = mpsc::channel();
+        if let Some(image) = self.take_preloaded_image(photo.id) {
+            let texture_name = format!("viewer-photo-{}", photo.id);
+            self.full_texture = Some(ctx.load_texture(texture_name, image, TextureOptions::LINEAR));
+            self.loaded_photo_id = Some(photo.id);
+            self.loading = false;
+            self.pending_full_loads.remove(&photo.id);
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.loading || self.pending_full_loads.contains(&photo.id) {
+            self.loading = true;
+            return;
+        }
+
+        self.spawn_full_load(ctx, photo.clone(), true);
+        self.loading = true;
+    }
+
+    fn spawn_full_load(&mut self, ctx: &egui::Context, photo: Photo, include_preview: bool) {
+        if !self.pending_full_loads.insert(photo.id) {
+            return;
+        }
+
+        let sender = self.sender.clone();
         let photo = photo.clone();
         let repaint_context = ctx.clone();
-        self.receiver = Some(receiver);
-        self.loading = true;
 
         thread::spawn(move || {
-            if let Some(preview) = load_cached_thumbnail_image(&photo) {
+            if include_preview && let Some(preview) = load_cached_thumbnail_image(&photo) {
                 let _ = sender.send(ViewerMessage::Preview {
                     id: photo.id,
                     image: preview,
@@ -353,6 +415,28 @@ impl ViewerState {
             });
             repaint_context.request_repaint();
         });
+    }
+
+    fn remember_preloaded_image(&mut self, id: i64, image: ColorImage) {
+        if !self.preloaded_images.contains_key(&id) {
+            self.preload_order.push_back(id);
+        }
+        self.preloaded_images.insert(id, image);
+        self.evict_old_preloaded_images();
+    }
+
+    fn take_preloaded_image(&mut self, id: i64) -> Option<ColorImage> {
+        self.preload_order.retain(|cached_id| *cached_id != id);
+        self.preloaded_images.remove(&id)
+    }
+
+    fn evict_old_preloaded_images(&mut self) {
+        while self.preloaded_images.len() > VIEWER_PRELOAD_CACHE_CAPACITY {
+            let Some(oldest_id) = self.preload_order.pop_front() else {
+                break;
+            };
+            self.preloaded_images.remove(&oldest_id);
+        }
     }
 
     fn visible_texture(&self) -> Option<&TextureHandle> {
@@ -704,22 +788,74 @@ mod tests {
     #[test]
     fn viewer_prefers_full_texture_over_preview() {
         let ctx = egui::Context::default();
-        let preview = ctx.load_texture(
-            "preview",
-            ColorImage::from_rgba_unmultiplied([1, 1], &[255, 255, 255, 255]),
-            TextureOptions::LINEAR,
-        );
-        let full = ctx.load_texture(
-            "full",
-            ColorImage::from_rgba_unmultiplied([1, 1], &[255, 255, 255, 255]),
-            TextureOptions::LINEAR,
-        );
+        let preview =
+            ctx.load_texture("preview", color_image_for_test(255), TextureOptions::LINEAR);
+        let full = ctx.load_texture("full", color_image_for_test(255), TextureOptions::LINEAR);
         let mut viewer = ViewerState::default();
         viewer.preview_texture = Some(preview);
         assert!(viewer.visible_texture().is_some());
         viewer.full_texture = Some(full);
 
         assert_eq!(viewer.visible_texture().unwrap().name(), "full");
+    }
+
+    #[test]
+    fn viewer_preload_cache_evicts_oldest_images() {
+        let mut viewer = ViewerState::default();
+
+        for id in 1..=(VIEWER_PRELOAD_CACHE_CAPACITY as i64 + 1) {
+            viewer.remember_preloaded_image(id, color_image_for_test(id as u8));
+        }
+
+        assert!(!viewer.preloaded_images.contains_key(&1));
+        assert!(viewer.preloaded_images.contains_key(&2));
+        assert!(
+            viewer
+                .preloaded_images
+                .contains_key(&(VIEWER_PRELOAD_CACHE_CAPACITY as i64 + 1))
+        );
+        assert_eq!(viewer.preloaded_images.len(), VIEWER_PRELOAD_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn viewer_uses_preloaded_image_without_starting_load() {
+        let ctx = egui::Context::default();
+        let photo = photo_for_test(7);
+        let mut viewer = ViewerState::default();
+        viewer.remember_preloaded_image(photo.id, color_image_for_test(7));
+
+        viewer.open(photo.clone());
+        viewer.ensure_loading(&ctx, &photo);
+
+        assert_eq!(viewer.loaded_photo_id, Some(photo.id));
+        assert!(!viewer.loading);
+        assert!(viewer.full_texture.is_some());
+        assert!(!viewer.preloaded_images.contains_key(&photo.id));
+        assert!(!viewer.pending_full_loads.contains(&photo.id));
+    }
+
+    #[test]
+    fn viewer_preload_skips_current_cached_and_pending_photos() {
+        let ctx = egui::Context::default();
+        let mut viewer = ViewerState::default();
+        let current = photo_for_test(1);
+        viewer.open(current.clone());
+        viewer.remember_preloaded_image(2, color_image_for_test(2));
+        viewer.pending_full_loads.insert(3);
+
+        viewer.preload_photos(
+            &ctx,
+            &[
+                current,
+                photo_for_test(2),
+                photo_for_test(3),
+                photo_for_test(4),
+            ],
+        );
+
+        assert!(!viewer.pending_full_loads.contains(&1));
+        assert!(viewer.pending_full_loads.contains(&3));
+        assert!(viewer.pending_full_loads.contains(&4));
     }
 
     #[test]
@@ -754,5 +890,9 @@ mod tests {
             picasa_starred: false,
             picasa_face_count: 0,
         }
+    }
+
+    fn color_image_for_test(red: u8) -> ColorImage {
+        ColorImage::from_rgba_unmultiplied([1, 1], &[red, 0, 0, 255])
     }
 }

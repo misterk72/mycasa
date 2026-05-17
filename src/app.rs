@@ -504,6 +504,7 @@ impl MyCasaApp {
         for photo in &neighbors {
             let _ = self.thumbnails.state_for(ctx, photo);
         }
+        self.viewer.preload_photos(ctx, &neighbors);
     }
 
     fn photo_tile(&mut self, ui: &mut egui::Ui, photo: &Photo) {
