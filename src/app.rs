@@ -19,7 +19,7 @@ use crate::photo_limit::{INITIAL_PHOTO_LIMIT, MAX_PHOTO_LIMIT, next_photo_limit}
 use crate::scan_state::{begin_scan, finish_scan};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
 use crate::ui_text::middle_truncate;
-use crate::viewer::{NavigationDirection, ViewerState, adjacent_photo_id};
+use crate::viewer::{NavigationDirection, ViewerNavigationRequest, ViewerState, adjacent_photo_id};
 
 const THUMBNAIL_SIZE: f32 = 132.0;
 const TILE_PADDING: f32 = 8.0;
@@ -33,6 +33,7 @@ const INERTIAL_SCROLL_MAX_SPEED: f32 = 5200.0;
 const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.22;
 const INERTIAL_SCROLL_STOP_SPEED: f32 = 18.0;
 const INERTIAL_SCROLL_EXTERNAL_SYNC_EPSILON: f32 = 1.0;
+const VIEWER_WHEEL_NAVIGATION_THRESHOLD: f32 = 48.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -679,26 +680,56 @@ impl MyCasaApp {
             return;
         }
 
+        if let Some(request) = self.viewer.take_navigation_request() {
+            self.handle_viewer_navigation_request(request);
+            return;
+        }
+
         let direction = ctx.input(|input| {
             if input.key_pressed(egui::Key::ArrowLeft) {
                 Some(NavigationDirection::Previous)
             } else if input.key_pressed(egui::Key::ArrowRight) {
                 Some(NavigationDirection::Next)
             } else {
-                None
+                viewer_wheel_navigation_direction(effective_wheel_delta(
+                    input.raw_scroll_delta.y,
+                    input.smooth_scroll_delta.y,
+                ))
             }
         });
 
         let Some(direction) = direction else {
             return;
         };
+        self.navigate_viewer(current_id, direction);
+    }
+
+    fn handle_viewer_navigation_request(&mut self, request: ViewerNavigationRequest) {
+        match request {
+            ViewerNavigationRequest::Direction(direction) => {
+                let Some(current_id) = self.viewer.current_photo_id() else {
+                    return;
+                };
+                self.navigate_viewer(current_id, direction);
+            }
+            ViewerNavigationRequest::Photo(photo_id) => {
+                self.open_viewer_photo(photo_id);
+            }
+        }
+    }
+
+    fn navigate_viewer(&mut self, current_id: i64, direction: NavigationDirection) {
         let Some(next_id) = adjacent_photo_id(&self.photos, current_id, direction) else {
             return;
         };
+        self.open_viewer_photo(next_id);
+    }
+
+    fn open_viewer_photo(&mut self, photo_id: i64) {
         let Some(photo) = self
             .photos
             .iter()
-            .find(|photo| photo.id == next_id)
+            .find(|photo| photo.id == photo_id)
             .cloned()
         else {
             return;
@@ -1008,6 +1039,16 @@ fn effective_wheel_delta(raw_scroll_delta: f32, smooth_scroll_delta: f32) -> f32
     }
 }
 
+fn viewer_wheel_navigation_direction(wheel_delta: f32) -> Option<NavigationDirection> {
+    if wheel_delta <= -VIEWER_WHEEL_NAVIGATION_THRESHOLD {
+        Some(NavigationDirection::Next)
+    } else if wheel_delta >= VIEWER_WHEEL_NAVIGATION_THRESHOLD {
+        Some(NavigationDirection::Previous)
+    } else {
+        None
+    }
+}
+
 fn clamp_scroll_offset(offset: f32, max_offset: f32) -> f32 {
     offset.clamp(0.0, max_offset.max(0.0))
 }
@@ -1170,7 +1211,8 @@ impl eframe::App for MyCasaApp {
         }
 
         if self.viewer.is_open() {
-            self.viewer.show_docked(ctx);
+            self.viewer
+                .show_docked(ctx, &self.photos, &mut self.thumbnails);
         } else {
             self.viewer.poll_background_results();
             egui::TopBottomPanel::top("picasa_top_chrome")
@@ -1367,6 +1409,19 @@ mod tests {
     fn wheel_delta_prefers_raw_input_over_smooth_input() {
         assert_eq!(effective_wheel_delta(-120.0, -8.0), -120.0);
         assert_eq!(effective_wheel_delta(0.0, -8.0), -8.0);
+    }
+
+    #[test]
+    fn viewer_wheel_navigation_maps_wheel_direction_to_photos() {
+        assert_eq!(
+            viewer_wheel_navigation_direction(-120.0),
+            Some(NavigationDirection::Next)
+        );
+        assert_eq!(
+            viewer_wheel_navigation_direction(120.0),
+            Some(NavigationDirection::Previous)
+        );
+        assert_eq!(viewer_wheel_navigation_direction(-4.0), None);
     }
 
     #[test]

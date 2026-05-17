@@ -12,7 +12,7 @@ use egui::{
 use image::{ImageFormat, RgbaImage};
 
 use crate::catalog::Photo;
-use crate::thumbnails::load_cached_thumbnail_image;
+use crate::thumbnails::{ThumbnailCache, ThumbnailState, load_cached_thumbnail_image};
 
 #[cfg(test)]
 const VIEWER_MIN_SIZE: Vec2 = Vec2::new(980.0, 680.0);
@@ -39,16 +39,25 @@ const VIEWER_MATTE_PADDING: f32 = 8.0;
 const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
 const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
+const VIEWER_FILMSTRIP_RADIUS: usize = 4;
+const VIEWER_FILMSTRIP_THUMB_SIZE: f32 = 28.0;
+const VIEWER_FILMSTRIP_THUMB_GAP: f32 = 4.0;
 const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 9;
 const VIEWER_MAX_PENDING_FULL_LOADS: usize = 4;
 const VIEWER_DISK_CACHE_DIR: &str = "viewer";
 #[cfg(test)]
 const VIEWER_PANEL_GAP: f32 = 8.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationDirection {
     Previous,
     Next,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewerNavigationRequest {
+    Direction(NavigationDirection),
+    Photo(i64),
 }
 
 pub struct ViewerState {
@@ -63,6 +72,7 @@ pub struct ViewerState {
     preload_order: VecDeque<i64>,
     pending_full_loads: HashSet<i64>,
     loading: bool,
+    navigation_request: Option<ViewerNavigationRequest>,
 }
 
 enum ViewerMessage {
@@ -97,6 +107,7 @@ impl Default for ViewerState {
             preload_order: VecDeque::new(),
             pending_full_loads: HashSet::new(),
             loading: false,
+            navigation_request: None,
         }
     }
 }
@@ -108,6 +119,10 @@ impl ViewerState {
 
     pub fn current_photo_id(&self) -> Option<i64> {
         self.current.as_ref().map(|photo| photo.id)
+    }
+
+    pub fn take_navigation_request(&mut self) -> Option<ViewerNavigationRequest> {
+        self.navigation_request.take()
     }
 
     pub fn can_preload_around_current(&self) -> bool {
@@ -164,20 +179,26 @@ impl ViewerState {
         }
     }
 
-    pub fn show_docked(&mut self, ctx: &egui::Context) {
+    pub fn show_docked(
+        &mut self,
+        ctx: &egui::Context,
+        photos: &[Photo],
+        thumbnails: &mut ThumbnailCache,
+    ) {
         let Some(photo) = self.current.clone() else {
             return;
         };
 
         self.poll_loaded(ctx);
         self.ensure_loading(ctx, &photo);
+        let filmstrip_photos = viewer_filmstrip_photos(photos, photo.id, VIEWER_FILMSTRIP_RADIUS);
 
         egui::TopBottomPanel::top("viewer_filmstrip")
             .exact_height(VIEWER_FILMSTRIP_HEIGHT)
             .frame(egui::Frame::default().fill(VIEWER_BG))
             .show(ctx, |ui| {
                 apply_viewer_visuals(ui);
-                self.show_filmstrip(ui, ui.max_rect());
+                self.show_filmstrip(ui, ui.max_rect(), thumbnails, &filmstrip_photos, photo.id);
             });
 
         egui::SidePanel::left("viewer_tools")
@@ -193,24 +214,40 @@ impl ViewerState {
             .frame(egui::Frame::default().fill(VIEWER_BG))
             .show(ctx, |ui| {
                 apply_viewer_visuals(ui);
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(ui.max_rect())
-                        .layout(Layout::top_down(Align::Center)),
-                    |ui| {
-                        let stage_size = viewer_panel_stage_size(ui.max_rect());
-                        self.show_image(ui, stage_size);
-                        ui.separator();
-                        self.show_metadata(ui, &photo);
-                    },
-                );
+                let panel_rect = ui.max_rect();
+                self.show_image(ui, viewer_canvas_rect(panel_rect));
+                self.show_metadata(ui, viewer_metadata_rect(panel_rect), &photo);
             });
     }
 
-    fn show_filmstrip(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    fn show_filmstrip(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        thumbnails: &mut ThumbnailCache,
+        photos: &[Photo],
+        current_id: i64,
+    ) {
         ui.allocate_rect(rect, egui::Sense::hover());
         ui.painter().rect_filled(rect, 0.0, VIEWER_BG);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(4.0)), |ui| {
+        let left_rect = egui::Rect::from_min_size(
+            rect.min + Vec2::new(4.0, 4.0),
+            Vec2::new(205.0, rect.height() - 8.0),
+        );
+        let right_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - 160.0, rect.top() + 4.0),
+            Vec2::new(156.0, rect.height() - 8.0),
+        );
+        let preview_width = filmstrip_preview_width(photos.len());
+        let center_rect = egui::Rect::from_center_size(
+            rect.center(),
+            Vec2::new(
+                preview_width.min(rect.width() - 420.0).max(150.0),
+                rect.height() - 6.0,
+            ),
+        );
+
+        ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .add_sized(
@@ -230,13 +267,109 @@ impl ViewerState {
                 {
                     self.zoom = 1.0;
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("A+  A-  A/A").color(Color32::from_gray(70)));
-                    ui.add_space(12.0);
-                    ui.label(RichText::new("◀  ▣ ▣ ▣ ▣  ▶").color(Color32::from_gray(65)));
-                });
             });
         });
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(center_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| {
+                if ui
+                    .add_sized(
+                        Vec2::new(22.0, VIEWER_NAV_BUTTON_HEIGHT),
+                        viewer_button("◀"),
+                    )
+                    .clicked()
+                {
+                    self.request_navigation(NavigationDirection::Previous);
+                }
+                for photo in photos {
+                    self.show_filmstrip_thumbnail(ui, thumbnails, photo, photo.id == current_id);
+                }
+                if ui
+                    .add_sized(
+                        Vec2::new(22.0, VIEWER_NAV_BUTTON_HEIGHT),
+                        viewer_button("▶"),
+                    )
+                    .clicked()
+                {
+                    self.request_navigation(NavigationDirection::Next);
+                }
+            },
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(right_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| {
+                ui.label(RichText::new("A+  A-  A/A").color(Color32::from_gray(70)));
+            },
+        );
+    }
+
+    fn show_filmstrip_thumbnail(
+        &mut self,
+        ui: &mut egui::Ui,
+        thumbnails: &mut ThumbnailCache,
+        photo: &Photo,
+        selected: bool,
+    ) {
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::splat(VIEWER_FILMSTRIP_THUMB_SIZE),
+            egui::Sense::click(),
+        );
+        let fill = if selected {
+            Color32::from_rgb(222, 236, 252)
+        } else if response.hovered() {
+            Color32::from_rgb(235, 239, 244)
+        } else {
+            Color32::from_rgb(207, 211, 215)
+        };
+        ui.painter().rect_filled(rect, 2.0, fill);
+
+        match thumbnails.state_for(ui.ctx(), photo) {
+            ThumbnailState::Ready(texture) => {
+                let image_rect = viewer_fit_rect(rect.shrink(2.0), texture.size_vec2());
+                ui.painter().image(
+                    texture.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            ThumbnailState::Pending => {
+                ui.painter()
+                    .circle_filled(rect.center(), 3.0, Color32::from_rgb(145, 150, 155));
+            }
+            ThumbnailState::Unavailable => {
+                ui.painter().line_segment(
+                    [
+                        rect.left_top() + Vec2::splat(6.0),
+                        rect.right_bottom() - Vec2::splat(6.0),
+                    ],
+                    Stroke::new(1.0, Color32::from_rgb(145, 70, 70)),
+                );
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.right() - 6.0, rect.top() + 6.0),
+                        egui::pos2(rect.left() + 6.0, rect.bottom() - 6.0),
+                    ],
+                    Stroke::new(1.0, Color32::from_rgb(145, 70, 70)),
+                );
+            }
+        }
+
+        let stroke = if selected {
+            Stroke::new(2.0, VIEWER_BLUE)
+        } else {
+            Stroke::new(1.0, Color32::from_rgb(150, 155, 160))
+        };
+        ui.painter()
+            .rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
+
+        if response.clicked() {
+            self.navigation_request = Some(ViewerNavigationRequest::Photo(photo.id));
+        }
     }
 
     fn show_tool_panel(&mut self, ui: &mut egui::Ui) {
@@ -308,9 +441,8 @@ impl ViewerState {
         );
     }
 
-    fn show_metadata(&self, ui: &mut egui::Ui, photo: &Photo) {
-        let available = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(available, 36.0), egui::Sense::hover());
+    fn show_metadata(&self, ui: &mut egui::Ui, rect: egui::Rect, photo: &Photo) {
+        ui.allocate_rect(rect, egui::Sense::hover());
         ui.painter()
             .rect_filled(rect, 0.0, Color32::from_rgb(232, 235, 238));
         ui.painter().line_segment(
@@ -343,15 +475,21 @@ impl ViewerState {
                                 .color(Color32::from_gray(85)),
                         );
                     }
+                    if let Some(caption) = &photo.picasa_caption {
+                        ui.label(
+                            RichText::new(format!("Legende: {caption}"))
+                                .color(Color32::from_gray(85)),
+                        );
+                    }
+                    if let Some(keywords) = &photo.picasa_keywords {
+                        ui.label(
+                            RichText::new(format!("Mots-cles: {keywords}"))
+                                .color(Color32::from_gray(85)),
+                        );
+                    }
                 });
             },
         );
-        if let Some(caption) = &photo.picasa_caption {
-            ui.label(format!("Legende Picasa: {caption}"));
-        }
-        if let Some(keywords) = &photo.picasa_keywords {
-            ui.label(format!("Mots-cles Picasa: {keywords}"));
-        }
     }
 
     fn poll_loaded(&mut self, ctx: &egui::Context) {
@@ -494,10 +632,8 @@ impl ViewerState {
         self.full_texture.as_ref().or(self.preview_texture.as_ref())
     }
 
-    fn show_image(&self, ui: &mut egui::Ui, stage_size: Vec2) {
-        let viewer_size = viewer_canvas_size(stage_size);
-        let (rect, _) = ui.allocate_exact_size(viewer_size, egui::Sense::drag());
-
+    fn show_image(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        ui.allocate_rect(rect, egui::Sense::drag());
         ui.painter().rect_filled(rect, 0.0, VIEWER_CANVAS_BG);
 
         if let Some(texture) = self.visible_texture() {
@@ -532,6 +668,31 @@ impl ViewerState {
                 Color32::LIGHT_GRAY,
             );
         }
+
+        self.show_canvas_navigation_arrows(ui, rect);
+    }
+
+    fn show_canvas_navigation_arrows(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let button_size = Vec2::new(34.0, 54.0);
+        let previous_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 28.0, rect.center().y),
+            button_size,
+        );
+        let next_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 28.0, rect.center().y),
+            button_size,
+        );
+
+        if ui.put(previous_rect, viewer_overlay_button("‹")).clicked() {
+            self.request_navigation(NavigationDirection::Previous);
+        }
+        if ui.put(next_rect, viewer_overlay_button("›")).clicked() {
+            self.request_navigation(NavigationDirection::Next);
+        }
+    }
+
+    fn request_navigation(&mut self, direction: NavigationDirection) {
+        self.navigation_request = Some(ViewerNavigationRequest::Direction(direction));
     }
 }
 
@@ -545,6 +706,19 @@ pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
         .min(available.y.max(VIEWER_MIN_CANVAS_HEIGHT));
 
     Vec2::new(available.x.max(VIEWER_MIN_CANVAS_WIDTH), height)
+}
+
+pub fn viewer_canvas_rect(panel_rect: egui::Rect) -> egui::Rect {
+    let canvas_size = viewer_canvas_size(panel_rect.size());
+    egui::Rect::from_min_size(panel_rect.min, canvas_size)
+}
+
+pub fn viewer_metadata_rect(panel_rect: egui::Rect) -> egui::Rect {
+    let canvas_rect = viewer_canvas_rect(panel_rect);
+    egui::Rect::from_min_size(
+        egui::pos2(canvas_rect.left(), canvas_rect.bottom()),
+        Vec2::new(canvas_rect.width(), VIEWER_METADATA_HEIGHT),
+    )
 }
 
 pub fn viewer_image_rect(canvas_rect: egui::Rect, image_size: Vec2, zoom: f32) -> egui::Rect {
@@ -563,6 +737,16 @@ pub fn viewer_image_rect(canvas_rect: egui::Rect, image_size: Vec2, zoom: f32) -
     egui::Rect::from_center_size(canvas_rect.center(), fitted_size)
 }
 
+pub fn viewer_fit_rect(container: egui::Rect, content_size: Vec2) -> egui::Rect {
+    if content_size.x <= 0.0 || content_size.y <= 0.0 {
+        return egui::Rect::from_center_size(container.center(), Vec2::ZERO);
+    }
+
+    let scale = (container.width() / content_size.x).min(container.height() / content_size.y);
+    egui::Rect::from_center_size(container.center(), content_size * scale)
+}
+
+#[cfg(test)]
 pub fn viewer_panel_stage_size(panel_rect: egui::Rect) -> Vec2 {
     panel_rect.size()
 }
@@ -576,6 +760,36 @@ fn viewer_button(label: &str) -> egui::Button<'_> {
         .fill(VIEWER_BUTTON_BG)
         .stroke(Stroke::new(1.0, VIEWER_BUTTON_STROKE))
         .corner_radius(2.0)
+}
+
+fn viewer_overlay_button(label: &str) -> egui::Button<'_> {
+    egui::Button::new(
+        RichText::new(label)
+            .size(30.0)
+            .color(Color32::from_gray(45)),
+    )
+    .fill(Color32::from_rgba_premultiplied(244, 246, 249, 190))
+    .stroke(Stroke::new(
+        1.0,
+        Color32::from_rgba_premultiplied(100, 105, 110, 190),
+    ))
+    .corner_radius(3.0)
+}
+
+pub fn viewer_filmstrip_photos(photos: &[Photo], current_id: i64, radius: usize) -> Vec<Photo> {
+    let Some(current_index) = photos.iter().position(|photo| photo.id == current_id) else {
+        return Vec::new();
+    };
+
+    let start = current_index.saturating_sub(radius);
+    let end = (current_index + radius + 1).min(photos.len());
+    photos[start..end].to_vec()
+}
+
+fn filmstrip_preview_width(photo_count: usize) -> f32 {
+    let thumbnails_width = photo_count as f32 * VIEWER_FILMSTRIP_THUMB_SIZE
+        + photo_count.saturating_sub(1) as f32 * VIEWER_FILMSTRIP_THUMB_GAP;
+    thumbnails_width + 2.0 * 22.0 + 2.0 * VIEWER_FILMSTRIP_THUMB_GAP
 }
 
 #[cfg(test)]
@@ -761,6 +975,22 @@ mod tests {
     }
 
     #[test]
+    fn viewer_navigation_request_is_consumed_once() {
+        let mut viewer = ViewerState::default();
+        viewer.navigation_request = Some(ViewerNavigationRequest::Direction(
+            NavigationDirection::Next,
+        ));
+
+        assert_eq!(
+            viewer.take_navigation_request(),
+            Some(ViewerNavigationRequest::Direction(
+                NavigationDirection::Next
+            ))
+        );
+        assert_eq!(viewer.take_navigation_request(), None);
+    }
+
+    #[test]
     fn adjusted_zoom_is_bounded() {
         assert_eq!(adjusted_zoom(1.0, 0.1), 1.1);
         assert_eq!(adjusted_zoom(0.2, -0.1), VIEWER_MIN_ZOOM);
@@ -781,6 +1011,17 @@ mod tests {
         let canvas = viewer_canvas_size(Vec2::new(1680.0, 960.0));
 
         assert_eq!(canvas, Vec2::new(1680.0, 916.0));
+    }
+
+    #[test]
+    fn viewer_canvas_and_metadata_rects_do_not_overlap() {
+        let panel = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1680.0, 960.0));
+        let canvas = viewer_canvas_rect(panel);
+        let metadata = viewer_metadata_rect(panel);
+
+        assert_eq!(canvas.bottom(), metadata.top());
+        assert_eq!(metadata.height(), VIEWER_METADATA_HEIGHT);
+        assert!(metadata.bottom() <= panel.bottom());
     }
 
     #[test]
@@ -818,6 +1059,15 @@ mod tests {
     }
 
     #[test]
+    fn viewer_fit_rect_preserves_aspect_ratio_inside_container() {
+        let container = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(30.0, 20.0));
+        let fitted = viewer_fit_rect(container, Vec2::new(100.0, 50.0));
+
+        assert_eq!(fitted.size(), Vec2::new(30.0, 15.0));
+        assert_eq!(fitted.center(), container.center());
+    }
+
+    #[test]
     fn viewer_panel_stage_size_uses_max_rect_size() {
         let panel = egui::Rect::from_min_size(egui::pos2(210.0, 34.0), Vec2::new(1490.0, 900.0));
 
@@ -850,6 +1100,26 @@ mod tests {
 
         assert_eq!(filmstrip.width(), 1920.0);
         assert_eq!(filmstrip.height(), VIEWER_FILMSTRIP_HEIGHT);
+    }
+
+    #[test]
+    fn viewer_filmstrip_photos_centers_current_photo() {
+        let photos: Vec<Photo> = (1..=10).map(photo_for_test).collect();
+
+        let filmstrip = viewer_filmstrip_photos(&photos, 5, 2);
+        let ids: Vec<i64> = filmstrip.iter().map(|photo| photo.id).collect();
+
+        assert_eq!(ids, vec![3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn viewer_filmstrip_photos_clamps_at_edges() {
+        let photos: Vec<Photo> = (1..=4).map(photo_for_test).collect();
+
+        let filmstrip = viewer_filmstrip_photos(&photos, 1, 3);
+        let ids: Vec<i64> = filmstrip.iter().map(|photo| photo.id).collect();
+
+        assert_eq!(ids, vec![1, 2, 3, 4]);
     }
 
     #[test]
