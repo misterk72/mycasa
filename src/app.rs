@@ -27,9 +27,9 @@ const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
 const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 1.15;
-const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 0.55;
-const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.055;
-const INERTIAL_SCROLL_STOP_SPEED: f32 = 8.0;
+const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 1.4;
+const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.18;
+const INERTIAL_SCROLL_STOP_SPEED: f32 = 18.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -575,14 +575,12 @@ impl MyCasaApp {
             .input(|input| input.pointer.hover_pos())
             .is_some_and(|position| ui.max_rect().contains(position));
         let (wheel_delta, dt) = ui.ctx().input(|input| {
-            (
-                if hovered {
-                    input.smooth_scroll_delta.y
-                } else {
-                    0.0
-                },
-                input.stable_dt.clamp(1.0 / 240.0, 0.1),
-            )
+            let wheel_delta = if hovered {
+                effective_wheel_delta(input.raw_scroll_delta.y, input.smooth_scroll_delta.y)
+            } else {
+                0.0
+            };
+            (wheel_delta, input.stable_dt.clamp(1.0 / 240.0, 0.1))
         });
 
         if self.main_scroll.tick(wheel_delta, dt) {
@@ -947,10 +945,22 @@ impl InertialScrollState {
 
     fn sync_from_scroll_area(&mut self, offset: f32, max_offset: f32) {
         self.max_offset = max_offset.max(0.0);
-        self.offset = clamp_scroll_offset(offset, self.max_offset);
+        if self.velocity.abs() <= INERTIAL_SCROLL_STOP_SPEED {
+            self.offset = clamp_scroll_offset(offset, self.max_offset);
+        } else {
+            self.offset = clamp_scroll_offset(self.offset, self.max_offset);
+        }
         if self.offset <= 0.0 || self.offset >= self.max_offset {
             self.velocity = 0.0;
         }
+    }
+}
+
+fn effective_wheel_delta(raw_scroll_delta: f32, smooth_scroll_delta: f32) -> f32 {
+    if raw_scroll_delta.abs() > f32::EPSILON {
+        raw_scroll_delta
+    } else {
+        smooth_scroll_delta
     }
 }
 
@@ -1206,6 +1216,26 @@ mod tests {
         assert!(active);
         assert!(scroll.offset > 100.0);
         assert!(scroll.velocity < 900.0);
+    }
+
+    #[test]
+    fn inertial_scroll_sync_does_not_erase_active_motion() {
+        let mut scroll = InertialScrollState {
+            offset: 180.0,
+            velocity: 900.0,
+            max_offset: 1000.0,
+        };
+
+        scroll.sync_from_scroll_area(0.0, 1000.0);
+
+        assert_eq!(scroll.offset, 180.0);
+        assert_eq!(scroll.velocity, 900.0);
+    }
+
+    #[test]
+    fn wheel_delta_prefers_raw_input_over_smooth_input() {
+        assert_eq!(effective_wheel_delta(-120.0, -8.0), -120.0);
+        assert_eq!(effective_wheel_delta(0.0, -8.0), -8.0);
     }
 
     #[test]
