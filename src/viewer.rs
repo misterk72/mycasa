@@ -148,6 +148,18 @@ impl ViewerState {
         }
     }
 
+    pub fn poll_background_results(&mut self) {
+        while let Ok(message) = self.receiver.try_recv() {
+            let ViewerMessage::Full { id, image } = message else {
+                continue;
+            };
+            self.pending_full_loads.remove(&id);
+            if let Some(image) = image {
+                self.remember_preloaded_image(id, image);
+            }
+        }
+    }
+
     pub fn show_docked(&mut self, ctx: &egui::Context) {
         let Some(photo) = self.current.clone() else {
             return;
@@ -888,6 +900,28 @@ mod tests {
         assert_eq!(viewer.loaded_photo_id, Some(photo.id));
         assert!(viewer.full_texture.is_some());
         assert!(viewer.preloaded_images.contains_key(&photo.id));
+    }
+
+    #[test]
+    fn viewer_caches_completed_full_image_while_closed() {
+        let photo = photo_for_test(14);
+        let mut viewer = ViewerState::default();
+        viewer.open(photo.clone());
+        viewer.pending_full_loads.insert(photo.id);
+        viewer.close();
+
+        viewer
+            .sender
+            .send(ViewerMessage::Full {
+                id: photo.id,
+                image: Some(color_image_for_test(14)),
+            })
+            .unwrap();
+        viewer.poll_background_results();
+
+        assert!(viewer.preloaded_images.contains_key(&photo.id));
+        assert!(!viewer.pending_full_loads.contains(&photo.id));
+        assert_eq!(viewer.current_photo_id(), None);
     }
 
     #[test]

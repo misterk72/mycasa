@@ -724,6 +724,7 @@ impl eframe::App for MyCasaApp {
         if self.viewer.is_open() {
             self.viewer.show_docked(ctx);
         } else {
+            self.viewer.poll_background_results();
             egui::TopBottomPanel::top("picasa_top_chrome")
                 .exact_height(60.0)
                 .show(ctx, |ui| self.ui_top_chrome(ui));
