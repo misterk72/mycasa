@@ -27,10 +27,10 @@ const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
 const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 0.9;
-const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 0.38;
-const INERTIAL_SCROLL_MIN_FLING_SPEED: f32 = 520.0;
-const INERTIAL_SCROLL_MAX_SPEED: f32 = 2400.0;
-const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.18;
+const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 0.32;
+const INERTIAL_SCROLL_MIN_FLING_SPEED: f32 = 600.0;
+const INERTIAL_SCROLL_MAX_SPEED: f32 = 5200.0;
+const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.22;
 const INERTIAL_SCROLL_STOP_SPEED: f32 = 18.0;
 const INERTIAL_SCROLL_EXTERNAL_SYNC_EPSILON: f32 = 1.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
@@ -1298,6 +1298,20 @@ mod tests {
 
         assert!(first >= INERTIAL_SCROLL_MIN_FLING_SPEED);
         assert!(second > first);
+    }
+
+    #[test]
+    fn wheel_fling_velocity_standard_notch_leaves_headroom_for_acceleration() {
+        let applied_delta = 120.0 * INERTIAL_SCROLL_WHEEL_MULTIPLIER;
+
+        let first = wheel_fling_velocity(0.0, applied_delta, 1.0 / 60.0);
+        let second = wheel_fling_velocity(first, applied_delta, 1.0 / 60.0);
+        let third = wheel_fling_velocity(second, applied_delta, 1.0 / 60.0);
+
+        assert!(first < INERTIAL_SCROLL_MAX_SPEED * 0.6);
+        assert!(second > first);
+        assert!(third > second);
+        assert!(third <= INERTIAL_SCROLL_MAX_SPEED);
     }
 
     #[test]
