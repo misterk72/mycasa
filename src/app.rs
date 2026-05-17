@@ -494,8 +494,26 @@ impl MyCasaApp {
             });
         });
         ui.add_space(4.0);
+        self.ui_collection_actions(ui);
+        ui.add_space(4.0);
         ui.label(RichText::new("Ajouter une description").color(Color32::from_gray(170)));
         ui.add_space(6.0);
+    }
+
+    fn ui_collection_actions(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for action in picasa_collection_action_labels() {
+                if ui
+                    .add_sized(
+                        [picasa_collection_action_width(action), 24.0],
+                        egui::Button::new(action),
+                    )
+                    .clicked()
+                {
+                    self.status = format!("{action}: a implementer");
+                }
+            }
+        });
     }
 
     fn ui_top_bar(&mut self, ui: &mut egui::Ui) {
@@ -976,16 +994,11 @@ impl MyCasaApp {
                         .strong(),
                 );
                 ui.add_space(24.0);
-                for label in [
-                    "Album Web",
-                    "E-mail",
-                    "Imprimer",
-                    "Commander",
-                    "BlogThis!",
-                    "Montage",
-                    "Exporter",
-                ] {
-                    if ui.button(label).clicked() {
+                for label in picasa_bottom_action_labels() {
+                    if ui
+                        .add_sized([82.0, 24.0], egui::Button::new(label))
+                        .clicked()
+                    {
                         self.status = format!("{label}: a implementer");
                     }
                 }
@@ -1273,6 +1286,30 @@ fn chronological_sidebar_years(photos: &[Photo]) -> Vec<i32> {
 
 fn picasa_filter_button_labels() -> [&'static str; 5] {
     ["★", "↑", "👤", "▦", "⌖"]
+}
+
+fn picasa_collection_action_labels() -> [&'static str; 6] {
+    ["Lecture", "Photo", "Film", "Favori", "Partager", "Menu"]
+}
+
+fn picasa_collection_action_width(label: &str) -> f32 {
+    match label {
+        "Partager" => 96.0,
+        "Lecture" => 74.0,
+        _ => 58.0,
+    }
+}
+
+fn picasa_bottom_action_labels() -> [&'static str; 7] {
+    [
+        "Album Web",
+        "E-mail",
+        "Imprimer",
+        "Commander",
+        "BlogThis!",
+        "Montage",
+        "Exporter",
+    ]
 }
 
 fn month_name(month: u32) -> &'static str {
@@ -1704,6 +1741,33 @@ mod tests {
     #[test]
     fn picasa_filter_strip_uses_reference_style_button_count() {
         assert_eq!(picasa_filter_button_labels().len(), 5);
+    }
+
+    #[test]
+    fn picasa_collection_actions_match_reference_header_controls() {
+        assert_eq!(
+            picasa_collection_action_labels(),
+            ["Lecture", "Photo", "Film", "Favori", "Partager", "Menu"]
+        );
+        assert!(
+            picasa_collection_action_width("Partager") > picasa_collection_action_width("Menu")
+        );
+    }
+
+    #[test]
+    fn picasa_bottom_tray_keeps_reference_action_count() {
+        assert_eq!(
+            picasa_bottom_action_labels(),
+            [
+                "Album Web",
+                "E-mail",
+                "Imprimer",
+                "Commander",
+                "BlogThis!",
+                "Montage",
+                "Exporter"
+            ]
+        );
     }
 
     fn photo_for_test(id: i64) -> Photo {
