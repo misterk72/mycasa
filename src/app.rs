@@ -26,10 +26,12 @@ const TILE_PADDING: f32 = 8.0;
 const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
-const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 1.15;
-const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 1.4;
-const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.18;
-const INERTIAL_SCROLL_STOP_SPEED: f32 = 18.0;
+const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 1.25;
+const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 2.8;
+const INERTIAL_SCROLL_MIN_FLING_SPEED: f32 = 2200.0;
+const INERTIAL_SCROLL_MAX_SPEED: f32 = 9000.0;
+const INERTIAL_SCROLL_FRICTION_PER_SECOND: f32 = 0.32;
+const INERTIAL_SCROLL_STOP_SPEED: f32 = 24.0;
 const MAX_INDEX_EVENTS_PER_FRAME: usize = 80;
 const REFRESH_AFTER_IMPORTED_PHOTOS: usize = 50;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -923,8 +925,7 @@ impl InertialScrollState {
         if wheel_delta.abs() > f32::EPSILON {
             let applied_delta = -wheel_delta * INERTIAL_SCROLL_WHEEL_MULTIPLIER;
             self.offset = clamp_scroll_offset(self.offset + applied_delta, self.max_offset);
-            self.velocity =
-                applied_delta / dt.max(1.0 / 240.0) * INERTIAL_SCROLL_VELOCITY_MULTIPLIER;
+            self.velocity = wheel_fling_velocity(self.velocity, applied_delta, dt);
             return true;
         }
 
@@ -953,6 +954,28 @@ impl InertialScrollState {
         if self.offset <= 0.0 || self.offset >= self.max_offset {
             self.velocity = 0.0;
         }
+    }
+}
+
+fn wheel_fling_velocity(current_velocity: f32, applied_delta: f32, dt: f32) -> f32 {
+    let raw_velocity = applied_delta / dt.max(1.0 / 240.0) * INERTIAL_SCROLL_VELOCITY_MULTIPLIER;
+    let direction = raw_velocity.signum();
+    if direction == 0.0 {
+        return current_velocity;
+    }
+
+    let current_same_direction = if current_velocity.signum() == direction {
+        current_velocity
+    } else {
+        0.0
+    };
+    let boosted = current_same_direction + raw_velocity;
+    let minimum = direction * INERTIAL_SCROLL_MIN_FLING_SPEED;
+
+    if boosted.abs() < INERTIAL_SCROLL_MIN_FLING_SPEED {
+        minimum
+    } else {
+        boosted.clamp(-INERTIAL_SCROLL_MAX_SPEED, INERTIAL_SCROLL_MAX_SPEED)
     }
 }
 
@@ -1189,6 +1212,7 @@ mod tests {
         assert!(active);
         assert!(scroll.offset > 0.0);
         assert!(scroll.velocity > 0.0);
+        assert!(scroll.velocity >= INERTIAL_SCROLL_MIN_FLING_SPEED);
     }
 
     #[test]
@@ -1216,6 +1240,22 @@ mod tests {
         assert!(active);
         assert!(scroll.offset > 100.0);
         assert!(scroll.velocity < 900.0);
+    }
+
+    #[test]
+    fn wheel_fling_velocity_accumulates_same_direction_notches() {
+        let first = wheel_fling_velocity(0.0, 10.0, 1.0 / 60.0);
+        let second = wheel_fling_velocity(first, 10.0, 1.0 / 60.0);
+
+        assert!(first >= INERTIAL_SCROLL_MIN_FLING_SPEED);
+        assert!(second > first);
+    }
+
+    #[test]
+    fn wheel_fling_velocity_resets_when_direction_changes() {
+        let first = wheel_fling_velocity(5000.0, -10.0, 1.0 / 60.0);
+
+        assert!(first <= -INERTIAL_SCROLL_MIN_FLING_SPEED);
     }
 
     #[test]
