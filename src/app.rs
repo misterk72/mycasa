@@ -55,14 +55,30 @@ enum LibraryViewMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChronologicalGridRow {
-    Section { label: String, photos: Vec<usize> },
+    Section {
+        label: String,
+        key: Option<ChronologySectionKey>,
+        photos: Vec<usize>,
+    },
     Photos(Vec<usize>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ChronologySectionKey {
+    year: i32,
+    month: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ChronologicalSidebarSection {
     year: i32,
     months: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ChronologicalStickySection<'a> {
+    label: &'a str,
+    key: Option<ChronologySectionKey>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -89,6 +105,8 @@ pub struct MyCasaApp {
     albums: Vec<String>,
     selected_photo: Option<i64>,
     library_view_mode: LibraryViewMode,
+    active_chronology_section: Option<ChronologySectionKey>,
+    pending_chronology_scroll: Option<ChronologySectionKey>,
     main_scroll: InertialScrollState,
     viewer_wheel_navigation: ViewerWheelNavigationState,
     status: String,
@@ -138,6 +156,8 @@ impl MyCasaApp {
             ],
             selected_photo: None,
             library_view_mode: LibraryViewMode::RetroChronological,
+            active_chronology_section: None,
+            pending_chronology_scroll: None,
             main_scroll: InertialScrollState::default(),
             viewer_wheel_navigation: ViewerWheelNavigationState::default(),
             status,
@@ -301,109 +321,158 @@ impl MyCasaApp {
 
     fn ui_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.visuals_mut().widgets.noninteractive.bg_fill = PANEL_BG;
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Phototheque")
-                    .strong()
-                    .color(Color32::from_gray(70)),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let _ = ui.small_button("+");
-            });
-        });
-        ui.separator();
-
-        egui::CollapsingHeader::new(format!("Albums ({})", self.albums.len()))
-            .default_open(true)
+        ScrollArea::vertical()
+            .id_salt("sidebar_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                for album in &self.albums {
-                    let _ = ui.selectable_label(album == "Toutes les photos", album);
-                }
-            });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Phototheque")
+                            .strong()
+                            .color(Color32::from_gray(70)),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let _ = ui.small_button("+");
+                    });
+                });
+                ui.separator();
 
-        let chronology_sections = chronological_sidebar_sections(&self.photos);
-        egui::CollapsingHeader::new(format!("Chronologie ({})", chronology_sections.len()))
-            .default_open(self.library_view_mode == LibraryViewMode::RetroChronological)
-            .show(ui, |ui| {
-                if chronology_sections.is_empty() {
-                    ui.label("Aucune date");
-                } else {
-                    for section in chronology_sections {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("▾").size(12.0).color(Color32::from_gray(110)));
-                            if ui
-                                .selectable_label(
-                                    self.library_view_mode == LibraryViewMode::RetroChronological,
-                                    section.year.to_string(),
-                                )
-                                .clicked()
-                            {
-                                self.library_view_mode = LibraryViewMode::RetroChronological;
-                                self.status = format!("Chronologie: {}", section.year);
-                            }
-                        });
-                        for month in section.months {
-                            ui.horizontal(|ui| {
-                                ui.add_space(18.0);
-                                ui.label(
-                                    RichText::new("▫").size(12.0).color(Color32::from_gray(120)),
-                                );
-                                let month_label = month_name(month);
-                                if ui
-                                    .selectable_label(false, month_label)
-                                    .on_hover_text(format!("{month_label} {}", section.year))
-                                    .clicked()
-                                {
-                                    self.library_view_mode = LibraryViewMode::RetroChronological;
-                                    self.status =
-                                        format!("Chronologie: {month_label} {}", section.year);
+                egui::CollapsingHeader::new(format!("Albums ({})", self.albums.len()))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for album in &self.albums {
+                            let _ = ui.selectable_label(album == "Toutes les photos", album);
+                        }
+                    });
+
+                let chronology_sections = chronological_sidebar_sections(&self.photos);
+                egui::CollapsingHeader::new(format!("Chronologie ({})", chronology_sections.len()))
+                    .default_open(self.library_view_mode == LibraryViewMode::RetroChronological)
+                    .show(ui, |ui| {
+                        if chronology_sections.is_empty() {
+                            ui.label("Aucune date");
+                        } else {
+                            for section in chronology_sections {
+                                let year_active = self.library_view_mode
+                                    == LibraryViewMode::RetroChronological
+                                    && self
+                                        .active_chronology_section
+                                        .is_some_and(|active| active.year == section.year);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("▾")
+                                            .size(12.0)
+                                            .color(Color32::from_gray(110)),
+                                    );
+                                    if ui
+                                        .selectable_label(year_active, section.year.to_string())
+                                        .clicked()
+                                    {
+                                        self.library_view_mode =
+                                            LibraryViewMode::RetroChronological;
+                                        self.active_chronology_section = section
+                                            .months
+                                            .first()
+                                            .map(|month| ChronologySectionKey {
+                                                year: section.year,
+                                                month: *month,
+                                            });
+                                        self.pending_chronology_scroll =
+                                            self.active_chronology_section;
+                                        self.status = format!("Chronologie: {}", section.year);
+                                    }
+                                });
+                                for month in section.months {
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(18.0);
+                                        ui.label(
+                                            RichText::new("▫")
+                                                .size(12.0)
+                                                .color(Color32::from_gray(120)),
+                                        );
+                                        let month_label = month_name(month);
+                                        let month_active = self.library_view_mode
+                                            == LibraryViewMode::RetroChronological
+                                            && self.active_chronology_section
+                                                == Some(ChronologySectionKey {
+                                                    year: section.year,
+                                                    month,
+                                                });
+                                        let response = ui
+                                            .selectable_label(month_active, month_label)
+                                            .on_hover_text(format!(
+                                                "{month_label} {}",
+                                                section.year
+                                            ));
+                                        if month_active {
+                                            response.scroll_to_me(Some(Align::Center));
+                                        }
+                                        if response.clicked() {
+                                            self.library_view_mode =
+                                                LibraryViewMode::RetroChronological;
+                                            self.active_chronology_section =
+                                                Some(ChronologySectionKey {
+                                                    year: section.year,
+                                                    month,
+                                                });
+                                            self.pending_chronology_scroll =
+                                                self.active_chronology_section;
+                                            self.status = format!(
+                                                "Chronologie: {month_label} {}",
+                                                section.year
+                                            );
+                                        }
+                                    });
                                 }
-                            });
+                            }
+                        }
+                    });
+
+                egui::CollapsingHeader::new(format!("Dossiers ({})", self.folders.len()))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if self.folders.is_empty() {
+                            ui.label("Aucun dossier indexe");
+                        } else {
+                            for folder in self.folders.clone() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("▸")
+                                            .size(12.0)
+                                            .color(Color32::from_gray(110)),
+                                    );
+                                    let folder_name = folder
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or_else(|| folder.to_str().unwrap_or("Dossier"));
+                                    if ui.selectable_label(false, folder_name).clicked() {
+                                        self.start_scan_folder(folder.clone());
+                                    }
+                                });
+                            }
+                        }
+                    });
+
+                ui.add_space(8.0);
+                if ui.button("Gestionnaire de dossiers").clicked() {
+                    self.pick_folder_and_scan();
+                }
+                if ui.button("Charger dossiers Picasa").clicked() {
+                    let picasa_folders = crate::picasa_db::load_watched_folders();
+                    let picasa_contacts = crate::picasa_db::load_contacts();
+                    let mut added = 0;
+                    for folder in picasa_folders {
+                        if add_folder_once(&mut self.folders, folder) {
+                            added += 1;
                         }
                     }
+                    self.status = format!(
+                        "{added} dossier(s) surveille(s) Picasa charges, {} contact(s) detecte(s)",
+                        picasa_contacts.len()
+                    );
                 }
             });
-
-        egui::CollapsingHeader::new(format!("Dossiers ({})", self.folders.len()))
-            .default_open(true)
-            .show(ui, |ui| {
-                if self.folders.is_empty() {
-                    ui.label("Aucun dossier indexe");
-                } else {
-                    for folder in self.folders.clone() {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("▸").size(12.0).color(Color32::from_gray(110)));
-                            let folder_name = folder
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or_else(|| folder.to_str().unwrap_or("Dossier"));
-                            if ui.selectable_label(false, folder_name).clicked() {
-                                self.start_scan_folder(folder.clone());
-                            }
-                        });
-                    }
-                }
-            });
-
-        ui.add_space(8.0);
-        if ui.button("Gestionnaire de dossiers").clicked() {
-            self.pick_folder_and_scan();
-        }
-        if ui.button("Charger dossiers Picasa").clicked() {
-            let picasa_folders = crate::picasa_db::load_watched_folders();
-            let picasa_contacts = crate::picasa_db::load_contacts();
-            let mut added = 0;
-            for folder in picasa_folders {
-                if add_folder_once(&mut self.folders, folder) {
-                    added += 1;
-                }
-            }
-            self.status = format!(
-                "{added} dossier(s) surveille(s) Picasa charges, {} contact(s) detecte(s)",
-                picasa_contacts.len()
-            );
-        }
     }
 
     fn ui_top_chrome(&mut self, ui: &mut egui::Ui) {
@@ -625,9 +694,19 @@ impl MyCasaApp {
         let row_layout = chronological_row_layout(&rows);
         let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
         self.update_main_scroll(ui, total_height);
+        if let Some(target) = self.pending_chronology_scroll.take() {
+            if let Some(offset) = chronological_section_offset(&rows, &row_layout, target) {
+                self.main_scroll.offset = clamp_scroll_offset(offset, self.main_scroll.max_offset);
+                self.main_scroll.velocity = 0.0;
+            }
+        }
 
+        let mut active_chronology_section = self.active_chronology_section;
         let output = self.main_scroll_area().show_viewport(ui, |ui, viewport| {
             ui.set_min_height(total_height);
+            active_chronology_section =
+                chronological_sticky_section(&rows, &row_layout, viewport.top())
+                    .and_then(|section| section.key);
 
             let origin = ui.min_rect().min;
             for (row_index, (top, bottom)) in row_layout.iter().enumerate() {
@@ -640,7 +719,7 @@ impl MyCasaApp {
                     Vec2::new(grid_width, bottom - top),
                 );
                 match &rows[row_index] {
-                    ChronologicalGridRow::Section { label, photos } => {
+                    ChronologicalGridRow::Section { label, photos, .. } => {
                         self.chronology_section_row(ui, row_rect, label, photos);
                     }
                     ChronologicalGridRow::Photos(photo_indices) => {
@@ -648,16 +727,16 @@ impl MyCasaApp {
                     }
                 }
             }
-            if let Some(label) =
-                chronological_sticky_section_label(&rows, &row_layout, viewport.top())
+            if let Some(section) = chronological_sticky_section(&rows, &row_layout, viewport.top())
             {
                 let sticky_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x, origin.y + viewport.top()),
                     Vec2::new(grid_width, CHRONO_SECTION_HEIGHT),
                 );
-                draw_chronology_header(ui, sticky_rect, label);
+                draw_chronology_header(ui, sticky_rect, section.label);
             }
         });
+        self.active_chronology_section = active_chronology_section;
         self.sync_main_scroll_from_output(
             ui,
             output.state.offset.y,
@@ -1191,6 +1270,7 @@ fn retrochronological_grid_rows(photos: &[Photo], columns: usize) -> Vec<Chronol
             push_photo_rows(&mut rows, &mut current_photos, columns);
             rows.push(ChronologicalGridRow::Section {
                 label: section.clone(),
+                key: photo_section_key(&photos[photo_index]),
                 photos: Vec::new(),
             });
             current_section = Some(section);
@@ -1246,27 +1326,46 @@ fn chronological_row_layout(rows: &[ChronologicalGridRow]) -> Vec<(f32, f32)> {
         .collect()
 }
 
-fn chronological_sticky_section_label<'a>(
+fn chronological_sticky_section<'a>(
     rows: &'a [ChronologicalGridRow],
     row_layout: &[(f32, f32)],
     viewport_top: f32,
-) -> Option<&'a str> {
+) -> Option<ChronologicalStickySection<'a>> {
     let mut active_label = None;
     for (row, (top, _)) in rows.iter().zip(row_layout.iter()) {
         if *top > viewport_top {
             break;
         }
-        if let ChronologicalGridRow::Section { label, .. } = row {
-            active_label = Some(label.as_str());
+        if let ChronologicalGridRow::Section { label, key, .. } = row {
+            active_label = Some(ChronologicalStickySection {
+                label: label.as_str(),
+                key: *key,
+            });
         }
     }
 
     active_label.or_else(|| {
         rows.iter().find_map(|row| match row {
-            ChronologicalGridRow::Section { label, .. } => Some(label.as_str()),
+            ChronologicalGridRow::Section { label, key, .. } => Some(ChronologicalStickySection {
+                label: label.as_str(),
+                key: *key,
+            }),
             ChronologicalGridRow::Photos(_) => None,
         })
     })
+}
+
+fn chronological_section_offset(
+    rows: &[ChronologicalGridRow],
+    row_layout: &[(f32, f32)],
+    target: ChronologySectionKey,
+) -> Option<f32> {
+    rows.iter()
+        .zip(row_layout.iter())
+        .find_map(|(row, (top, _))| match row {
+            ChronologicalGridRow::Section { key, .. } if *key == Some(target) => Some(*top),
+            _ => None,
+        })
 }
 
 fn draw_chronology_header(ui: &egui::Ui, rect: egui::Rect, label: &str) {
@@ -1312,16 +1411,24 @@ fn parse_photo_timestamp(value: &str) -> Option<i64> {
 }
 
 fn photo_section_label(photo: &Photo) -> String {
+    match photo_section_key(photo) {
+        Some(key) => format!("{} {}", month_name(key.month), key.year),
+        None => "Date inconnue".to_owned(),
+    }
+}
+
+fn photo_section_key(photo: &Photo) -> Option<ChronologySectionKey> {
     let timestamp = photo_time_key(photo);
     if timestamp <= 0 {
-        return "Date inconnue".to_owned();
+        return None;
     }
 
     match Utc.timestamp_opt(timestamp, 0) {
-        LocalResult::Single(datetime) => {
-            format!("{} {}", month_name(datetime.month()), datetime.year())
-        }
-        _ => "Date inconnue".to_owned(),
+        LocalResult::Single(datetime) => Some(ChronologySectionKey {
+            year: datetime.year(),
+            month: datetime.month(),
+        }),
+        _ => None,
     }
 }
 
@@ -1740,14 +1847,26 @@ mod tests {
             vec![
                 ChronologicalGridRow::Section {
                     label: "Mars 2024".to_owned(),
+                    key: Some(ChronologySectionKey {
+                        year: 2024,
+                        month: 3,
+                    }),
                     photos: vec![1],
                 },
                 ChronologicalGridRow::Section {
                     label: "Fevrier 2024".to_owned(),
+                    key: Some(ChronologySectionKey {
+                        year: 2024,
+                        month: 2,
+                    }),
                     photos: vec![2],
                 },
                 ChronologicalGridRow::Section {
                     label: "Janvier 2024".to_owned(),
+                    key: Some(ChronologySectionKey {
+                        year: 2024,
+                        month: 1,
+                    }),
                     photos: vec![0],
                 },
             ]
@@ -1770,10 +1889,18 @@ mod tests {
             vec![
                 ChronologicalGridRow::Section {
                     label: "Janvier 2027".to_owned(),
+                    key: Some(ChronologySectionKey {
+                        year: 2027,
+                        month: 1,
+                    }),
                     photos: vec![1],
                 },
                 ChronologicalGridRow::Section {
                     label: "Avril 2025".to_owned(),
+                    key: Some(ChronologySectionKey {
+                        year: 2025,
+                        month: 4,
+                    }),
                     photos: vec![0],
                 },
             ]
@@ -1785,6 +1912,10 @@ mod tests {
         let rows = vec![
             ChronologicalGridRow::Section {
                 label: "Mars 2024".to_owned(),
+                key: Some(ChronologySectionKey {
+                    year: 2024,
+                    month: 3,
+                }),
                 photos: vec![0, 1],
             },
             ChronologicalGridRow::Photos(vec![2, 3]),
@@ -1808,23 +1939,90 @@ mod tests {
         let rows = vec![
             ChronologicalGridRow::Section {
                 label: "Avril 2026".to_owned(),
+                key: Some(ChronologySectionKey {
+                    year: 2026,
+                    month: 4,
+                }),
                 photos: vec![0, 1],
             },
             ChronologicalGridRow::Photos(vec![2, 3]),
             ChronologicalGridRow::Section {
                 label: "Mars 2026".to_owned(),
+                key: Some(ChronologySectionKey {
+                    year: 2026,
+                    month: 3,
+                }),
                 photos: vec![4, 5],
             },
         ];
         let layout = chronological_row_layout(&rows);
 
         assert_eq!(
-            chronological_sticky_section_label(&rows, &layout, layout[1].0 + 8.0),
-            Some("Avril 2026")
+            chronological_sticky_section(&rows, &layout, layout[1].0 + 8.0),
+            Some(ChronologicalStickySection {
+                label: "Avril 2026",
+                key: Some(ChronologySectionKey {
+                    year: 2026,
+                    month: 4,
+                }),
+            })
         );
         assert_eq!(
-            chronological_sticky_section_label(&rows, &layout, layout[2].0),
-            Some("Mars 2026")
+            chronological_sticky_section(&rows, &layout, layout[2].0),
+            Some(ChronologicalStickySection {
+                label: "Mars 2026",
+                key: Some(ChronologySectionKey {
+                    year: 2026,
+                    month: 3,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn chronological_section_offset_finds_month_start_for_sidebar_navigation() {
+        let rows = vec![
+            ChronologicalGridRow::Section {
+                label: "Mai 2026".to_owned(),
+                key: Some(ChronologySectionKey {
+                    year: 2026,
+                    month: 5,
+                }),
+                photos: vec![0, 1],
+            },
+            ChronologicalGridRow::Photos(vec![2, 3]),
+            ChronologicalGridRow::Section {
+                label: "Avril 2026".to_owned(),
+                key: Some(ChronologySectionKey {
+                    year: 2026,
+                    month: 4,
+                }),
+                photos: vec![4, 5],
+            },
+        ];
+        let layout = chronological_row_layout(&rows);
+
+        assert_eq!(
+            chronological_section_offset(
+                &rows,
+                &layout,
+                ChronologySectionKey {
+                    year: 2026,
+                    month: 4,
+                },
+            ),
+            Some(layout[2].0)
+        );
+        assert_eq!(
+            chronological_section_offset(
+                &rows,
+                &layout,
+                ChronologySectionKey {
+                    year: 2026,
+                    month: 3,
+                },
+            ),
+            None
         );
     }
 
