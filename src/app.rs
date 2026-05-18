@@ -648,6 +648,15 @@ impl MyCasaApp {
                     }
                 }
             }
+            if let Some(label) =
+                chronological_sticky_section_label(&rows, &row_layout, viewport.top())
+            {
+                let sticky_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x, origin.y + viewport.top()),
+                    Vec2::new(grid_width, CHRONO_SECTION_HEIGHT),
+                );
+                draw_chronology_header(ui, sticky_rect, label);
+            }
         });
         self.sync_main_scroll_from_output(
             ui,
@@ -715,19 +724,7 @@ impl MyCasaApp {
             rect.min + Vec2::new(0.0, 2.0),
             Vec2::new(available, CHRONO_SECTION_HEIGHT),
         );
-        ui.painter()
-            .rect_filled(header_rect, 0.0, Color32::from_rgb(238, 239, 239));
-        ui.painter().line_segment(
-            [header_rect.left_bottom(), header_rect.right_bottom()],
-            Stroke::new(1.0, CHROME_BORDER),
-        );
-        ui.painter().text(
-            header_rect.left_center() + Vec2::new(10.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            label,
-            egui::TextStyle::Heading.resolve(ui.style()),
-            Color32::from_rgb(174, 112, 45),
-        );
+        draw_chronology_header(ui, header_rect, label);
 
         let photos_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left(), header_rect.bottom() + TILE_PADDING),
@@ -1249,6 +1246,45 @@ fn chronological_row_layout(rows: &[ChronologicalGridRow]) -> Vec<(f32, f32)> {
         .collect()
 }
 
+fn chronological_sticky_section_label<'a>(
+    rows: &'a [ChronologicalGridRow],
+    row_layout: &[(f32, f32)],
+    viewport_top: f32,
+) -> Option<&'a str> {
+    let mut active_label = None;
+    for (row, (top, _)) in rows.iter().zip(row_layout.iter()) {
+        if *top > viewport_top {
+            break;
+        }
+        if let ChronologicalGridRow::Section { label, .. } = row {
+            active_label = Some(label.as_str());
+        }
+    }
+
+    active_label.or_else(|| {
+        rows.iter().find_map(|row| match row {
+            ChronologicalGridRow::Section { label, .. } => Some(label.as_str()),
+            ChronologicalGridRow::Photos(_) => None,
+        })
+    })
+}
+
+fn draw_chronology_header(ui: &egui::Ui, rect: egui::Rect, label: &str) {
+    ui.painter()
+        .rect_filled(rect, 0.0, Color32::from_rgb(238, 239, 239));
+    ui.painter().line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        Stroke::new(1.0, CHROME_BORDER),
+    );
+    ui.painter().text(
+        rect.left_center() + Vec2::new(10.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::TextStyle::Heading.resolve(ui.style()),
+        Color32::from_rgb(174, 112, 45),
+    );
+}
+
 fn photo_time_key(photo: &Photo) -> i64 {
     photo
         .captured_at
@@ -1765,6 +1801,31 @@ mod tests {
             )
         );
         assert!(chrono_section_row_height() < (TILE_HEIGHT + TILE_PADDING) * 2.0);
+    }
+
+    #[test]
+    fn chronological_sticky_label_keeps_month_visible_inside_photo_rows() {
+        let rows = vec![
+            ChronologicalGridRow::Section {
+                label: "Avril 2026".to_owned(),
+                photos: vec![0, 1],
+            },
+            ChronologicalGridRow::Photos(vec![2, 3]),
+            ChronologicalGridRow::Section {
+                label: "Mars 2026".to_owned(),
+                photos: vec![4, 5],
+            },
+        ];
+        let layout = chronological_row_layout(&rows);
+
+        assert_eq!(
+            chronological_sticky_section_label(&rows, &layout, layout[1].0 + 8.0),
+            Some("Avril 2026")
+        );
+        assert_eq!(
+            chronological_sticky_section_label(&rows, &layout, layout[2].0),
+            Some("Mars 2026")
+        );
     }
 
     #[test]
