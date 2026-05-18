@@ -16,7 +16,8 @@ use crate::folders::add_folder_once;
 use crate::grid::{columns_for_width, item_range_for_row, row_count};
 use crate::indexer::{IndexJob, IndexedPhoto, Indexer};
 use crate::photo_limit::{
-    INITIAL_PHOTO_LIMIT, next_photo_limit, photo_window_trim_count, should_extend_photo_window,
+    INITIAL_PHOTO_LIMIT, next_photo_limit, photo_window_trim_count, previous_photo_page,
+    should_extend_photo_window, should_prepend_photo_window,
 };
 use crate::scan_state::{begin_scan, finish_scan};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
@@ -293,6 +294,59 @@ impl MyCasaApp {
         evict_count
     }
 
+    fn prepend_photo_window(&mut self, columns: usize, chronological: bool) {
+        let Some((page_offset, page_size)) = previous_photo_page(self.photo_window_start) else {
+            return;
+        };
+
+        if let Ok(catalog) = &self.catalog {
+            match catalog.search_photos_page(&self.search, page_size, page_offset) {
+                Ok(mut photos) => {
+                    if photos.is_empty() {
+                        self.photo_window_start = 0;
+                        return;
+                    }
+
+                    let scroll_delta = if chronological {
+                        chronological_prepended_prefix_height(&photos, &self.photos, columns)
+                    } else {
+                        folder_removed_prefix_height(photos.len(), columns)
+                    };
+                    let prepended = photos.len();
+                    photos.append(&mut self.photos);
+                    self.photos = photos;
+                    self.photo_window_start = page_offset;
+                    self.main_scroll.offset =
+                        clamp_scroll_offset(self.main_scroll.offset + scroll_delta, f32::MAX);
+
+                    let evicted_tail = self.trim_photo_window_tail();
+                    if evicted_tail > 0 {
+                        self.all_photos_loaded = false;
+                        self.photo_limit = self.photo_window_start + self.photos.len();
+                    }
+                    self.status = format!(
+                        "Chargement precedent: {} photo(s), fenetre {}-{}",
+                        prepended,
+                        self.photo_window_start + 1,
+                        self.photo_window_start + self.photos.len()
+                    );
+                }
+                Err(error) => self.status = format!("Erreur catalogue: {error}"),
+            }
+        }
+    }
+
+    fn trim_photo_window_tail(&mut self) -> usize {
+        let evict_count = photo_window_trim_count(self.photos.len());
+        if evict_count == 0 {
+            return 0;
+        }
+
+        let keep = self.photos.len() - evict_count;
+        self.photos.truncate(keep);
+        evict_count
+    }
+
     fn refresh_photos(&mut self) {
         if let Ok(catalog) = &self.catalog {
             let photos_result = catalog.search_photos(&self.search, self.photo_limit);
@@ -361,6 +415,16 @@ impl MyCasaApp {
             self.all_photos_loaded,
         ) {
             self.extend_photo_window(columns, chronological);
+        }
+    }
+
+    fn maybe_prepend_photo_window_after_scroll(&mut self, columns: usize, chronological: bool) {
+        if should_prepend_photo_window(
+            self.main_scroll.offset,
+            self.photos.len(),
+            self.photo_window_start,
+        ) {
+            self.prepend_photo_window(columns, chronological);
         }
     }
 
@@ -815,6 +879,7 @@ impl MyCasaApp {
             output.content_size,
             output.inner_rect,
         );
+        self.maybe_prepend_photo_window_after_scroll(columns, false);
         self.maybe_extend_photo_window_after_scroll(columns, false);
     }
 
@@ -878,6 +943,7 @@ impl MyCasaApp {
             output.content_size,
             output.inner_rect,
         );
+        self.maybe_prepend_photo_window_after_scroll(columns, true);
         self.maybe_extend_photo_window_after_scroll(columns, true);
     }
 
@@ -1533,6 +1599,26 @@ fn chronological_removed_prefix_height(
 ) -> f32 {
     let prefix_len = removed_photos.min(photos.len());
     let rows = retrochronological_grid_rows(&photos[..prefix_len], columns);
+    chronological_row_layout(&rows)
+        .last()
+        .map(|(_, bottom)| *bottom)
+        .unwrap_or(0.0)
+}
+
+fn chronological_prepended_prefix_height(
+    prepended: &[Photo],
+    existing: &[Photo],
+    columns: usize,
+) -> f32 {
+    let mut combined = Vec::with_capacity(prepended.len() + existing.len());
+    combined.extend_from_slice(prepended);
+    combined.extend_from_slice(existing);
+
+    chronological_total_height(&combined, columns) - chronological_total_height(existing, columns)
+}
+
+fn chronological_total_height(photos: &[Photo], columns: usize) -> f32 {
+    let rows = retrochronological_grid_rows(photos, columns);
     chronological_row_layout(&rows)
         .last()
         .map(|(_, bottom)| *bottom)
@@ -2261,6 +2347,24 @@ mod tests {
         assert_eq!(
             chronological_removed_prefix_height(&photos, 2, 2),
             chrono_section_row_height()
+        );
+    }
+
+    #[test]
+    fn prepended_chronological_height_accounts_for_merged_month_header() {
+        let mut newest_april = photo_for_test(1);
+        newest_april.captured_at = Some("2026-04-12T10:00:00Z".to_owned());
+        let mut existing_april_1 = photo_for_test(2);
+        existing_april_1.captured_at = Some("2026-04-10T10:00:00Z".to_owned());
+        let mut existing_april_2 = photo_for_test(3);
+        existing_april_2.captured_at = Some("2026-04-09T10:00:00Z".to_owned());
+
+        let prepended = vec![newest_april];
+        let existing = vec![existing_april_1, existing_april_2];
+
+        assert_eq!(
+            chronological_prepended_prefix_height(&prepended, &existing, 2),
+            chrono_photo_row_height()
         );
     }
 

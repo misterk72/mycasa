@@ -1,6 +1,7 @@
 pub const INITIAL_PHOTO_LIMIT: usize = 500;
 pub const PHOTO_LIMIT_STEP: usize = 500;
 pub const AUTO_EXTEND_SCROLL_THRESHOLD: f32 = 900.0;
+pub const AUTO_PREPEND_SCROLL_THRESHOLD: f32 = 900.0;
 pub const PHOTO_WINDOW_MAX_COUNT: usize = 3_000;
 pub const PHOTO_WINDOW_RETAIN_COUNT: usize = 2_000;
 
@@ -19,6 +20,23 @@ pub fn should_extend_photo_window(
     }
 
     max_scroll_offset - scroll_offset <= AUTO_EXTEND_SCROLL_THRESHOLD
+}
+
+pub fn should_prepend_photo_window(
+    scroll_offset: f32,
+    loaded_photos: usize,
+    window_start: usize,
+) -> bool {
+    window_start > 0 && loaded_photos > 0 && scroll_offset <= AUTO_PREPEND_SCROLL_THRESHOLD
+}
+
+pub fn previous_photo_page(window_start: usize) -> Option<(usize, usize)> {
+    if window_start == 0 {
+        return None;
+    }
+
+    let offset = window_start.saturating_sub(PHOTO_LIMIT_STEP);
+    Some((offset, window_start - offset))
 }
 
 pub fn photo_window_trim_count(loaded_photos: usize) -> usize {
@@ -54,6 +72,21 @@ mod tests {
         assert!(!should_extend_photo_window(4_500.0, 5_000.0, 500, true));
         assert!(!should_extend_photo_window(0.0, 0.0, 500, false));
         assert!(!should_extend_photo_window(0.0, 5_000.0, 0, false));
+    }
+
+    #[test]
+    fn should_prepend_photo_window_near_scroll_top_when_window_has_offset() {
+        assert!(should_prepend_photo_window(200.0, 2_000, 1_000));
+        assert!(!should_prepend_photo_window(1_200.0, 2_000, 1_000));
+        assert!(!should_prepend_photo_window(200.0, 2_000, 0));
+        assert!(!should_prepend_photo_window(200.0, 0, 1_000));
+    }
+
+    #[test]
+    fn previous_photo_page_returns_page_before_window_start() {
+        assert_eq!(previous_photo_page(1_200), Some((700, 500)));
+        assert_eq!(previous_photo_page(200), Some((0, 200)));
+        assert_eq!(previous_photo_page(0), None);
     }
 
     #[test]
