@@ -41,7 +41,9 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Ecritures catalogue regroupees en transactions par lot pour reduire les pauses pendant l'indexation.
 - File evenements indexation bornee a 512 messages pour appliquer une pression retour au scan.
 - Scans du meme dossier dedupliques pendant qu'une indexation est deja active.
-- Chargement catalogue pagine par pas de 500 photos, plafonne a 5000 pour proteger la grille.
+- Chargement catalogue progressif par pas de 500 photos, declenche automatiquement pres du bas du scroll, sans bouton ni plafond utilisateur visible.
+- Fenetre memoire catalogue bornee : apres 3000 photos chargees, MyCasa conserve environ 2000 photos autour de la progression courante et ajuste le scroll apres eviction.
+- Sidebar Chronologie alimentee par les mois distincts du catalogue complet, independamment de la fenetre memoire chargee dans la grille.
 - Cache memoire miniatures borne a 800 textures pretes, avec regeneration possible depuis le cache disque.
 - Demandes miniatures visibles prioritaires dans la file de chargement.
 - Vue retrochronologique a plat avec tri par date capturee, date de modification en repli, et en-tetes mensuels virtualises.

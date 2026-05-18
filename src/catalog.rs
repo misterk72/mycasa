@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use chrono::{Datelike, LocalResult, TimeZone, Utc};
 use directories::ProjectDirs;
 use rusqlite::{Connection, params};
 
@@ -60,6 +61,15 @@ impl Catalog {
     }
 
     pub fn search_photos(&self, search: &str, limit: usize) -> Result<Vec<Photo>, CatalogError> {
+        self.search_photos_page(search, limit, 0)
+    }
+
+    pub fn search_photos_page(
+        &self,
+        search: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Photo>, CatalogError> {
         let pattern = format!("%{}%", search.trim());
         let mut statement = if search.trim().is_empty() {
             self.connection.prepare(
@@ -69,7 +79,7 @@ impl Catalog {
                  FROM photos
                  ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
                           id DESC
-                 LIMIT ?1",
+                 LIMIT ?1 OFFSET ?2",
             )?
         } else {
             self.connection.prepare(
@@ -81,14 +91,14 @@ impl Catalog {
                     OR picasa_caption LIKE ?2 OR picasa_keywords LIKE ?2
                  ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
                           id DESC
-                 LIMIT ?1",
+                 LIMIT ?1 OFFSET ?3",
             )?
         };
 
         let params: &[&dyn rusqlite::ToSql] = if search.trim().is_empty() {
-            &[&(limit as i64)]
+            &[&(limit as i64), &(offset as i64)]
         } else {
-            &[&(limit as i64), &pattern]
+            &[&(limit as i64), &pattern, &(offset as i64)]
         };
 
         let photos = statement
@@ -118,6 +128,63 @@ impl Catalog {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(photos)
+    }
+
+    pub fn chronology_months(&self, search: &str) -> Result<Vec<(i32, u32)>, CatalogError> {
+        let mut months = self.search_photo_time_keys(search)?;
+        months.sort_unstable_by(|left, right| right.cmp(left));
+        months.dedup();
+        Ok(months)
+    }
+
+    pub fn photo_offset_for_month(
+        &self,
+        search: &str,
+        year: i32,
+        month: u32,
+    ) -> Result<Option<usize>, CatalogError> {
+        Ok(self
+            .search_photo_time_keys(search)?
+            .into_iter()
+            .position(|(photo_year, photo_month)| photo_year == year && photo_month == month))
+    }
+
+    fn search_photo_time_keys(&self, search: &str) -> Result<Vec<(i32, u32)>, CatalogError> {
+        let pattern = format!("%{}%", search.trim());
+        let mut statement = if search.trim().is_empty() {
+            self.connection.prepare(
+                "SELECT captured_at, modified_at
+                 FROM photos
+                 ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
+                          id DESC",
+            )?
+        } else {
+            self.connection.prepare(
+                "SELECT captured_at, modified_at
+                 FROM photos
+                 WHERE file_name LIKE ?1 OR parent_path LIKE ?1 OR path LIKE ?1
+                    OR picasa_caption LIKE ?1 OR picasa_keywords LIKE ?1
+                 ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
+                          id DESC",
+            )?
+        };
+
+        let params: &[&dyn rusqlite::ToSql] = if search.trim().is_empty() {
+            &[]
+        } else {
+            &[&pattern]
+        };
+
+        let keys = statement
+            .query_map(params, |row| {
+                let captured_at = row.get::<_, Option<String>>(0)?;
+                let modified_at = row.get::<_, Option<i64>>(1)?;
+                Ok(photo_time_month_key(captured_at.as_deref(), modified_at))
+            })?
+            .filter_map(Result::transpose)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(keys)
     }
 
     #[cfg(test)]
@@ -235,6 +302,39 @@ impl Catalog {
 
         Ok(())
     }
+}
+
+fn photo_time_month_key(captured_at: Option<&str>, modified_at: Option<i64>) -> Option<(i32, u32)> {
+    let timestamp = captured_at
+        .and_then(parse_photo_timestamp)
+        .or(modified_at)?;
+
+    match Utc.timestamp_opt(timestamp, 0) {
+        LocalResult::Single(datetime) => Some((datetime.year(), datetime.month())),
+        _ => None,
+    }
+}
+
+fn parse_photo_timestamp(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|datetime| datetime.timestamp())
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y:%m:%d %H:%M:%S")
+                .ok()
+                .map(|datetime| datetime.and_utc().timestamp())
+        })
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|datetime| datetime.and_utc().timestamp())
+        })
+        .or_else(|| {
+            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .map(|datetime| datetime.and_utc().timestamp())
+        })
 }
 
 fn upsert_photo_on_connection(
@@ -395,6 +495,99 @@ mod tests {
 
         assert_eq!(loaded[0].path, PathBuf::from("/photos/newer.jpg"));
         assert_eq!(loaded[1].path, PathBuf::from("/photos/older.jpg"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn search_photos_page_loads_next_slice_without_reloading_first_rows() {
+        let path = test_db_path("paged-search");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        for index in 1..=3 {
+            let mut photo = crate::indexer::IndexedPhoto::for_test(PathBuf::from(format!(
+                "/photos/{index}.jpg"
+            )));
+            photo.modified_at = Some(1_700_000_000 + index);
+            catalog.upsert_photo(&photo).unwrap();
+        }
+
+        let first_page = catalog.search_photos_page("/photos", 2, 0).unwrap();
+        let second_page = catalog.search_photos_page("/photos", 2, 2).unwrap();
+
+        assert_eq!(first_page.len(), 2);
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(first_page[0].path, PathBuf::from("/photos/3.jpg"));
+        assert_eq!(first_page[1].path, PathBuf::from("/photos/2.jpg"));
+        assert_eq!(second_page[0].path, PathBuf::from("/photos/1.jpg"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn chronology_months_include_all_catalog_dates_beyond_loaded_page() {
+        let path = test_db_path("chronology-months");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        for (index, captured_at) in [
+            (1, "2026-04-03T10:00:00Z"),
+            (2, "2026-03-01T10:00:00Z"),
+            (3, "2025-12-24T10:00:00Z"),
+        ] {
+            let mut photo = crate::indexer::IndexedPhoto::for_test(PathBuf::from(format!(
+                "/photos/{index}.jpg"
+            )));
+            photo.modified_at = Some(1);
+            photo.picasa = None;
+            catalog.upsert_photo(&photo).unwrap();
+            catalog
+                .connection
+                .execute(
+                    "UPDATE photos SET captured_at = ?1 WHERE path = ?2",
+                    params![captured_at, format!("/photos/{index}.jpg")],
+                )
+                .unwrap();
+        }
+
+        let loaded_page = catalog.search_photos("/photos", 1).unwrap();
+        let months = catalog.chronology_months("/photos").unwrap();
+
+        assert_eq!(loaded_page.len(), 1);
+        assert_eq!(months, vec![(2026, 4), (2026, 3), (2025, 12)]);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn photo_offset_for_month_finds_first_photo_in_sorted_catalog() {
+        let path = test_db_path("month-offset");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        for (index, captured_at) in [
+            (1, "2026-05-01T10:00:00Z"),
+            (2, "2026-04-03T10:00:00Z"),
+            (3, "2026-04-01T10:00:00Z"),
+            (4, "2026-03-01T10:00:00Z"),
+        ] {
+            let mut photo = crate::indexer::IndexedPhoto::for_test(PathBuf::from(format!(
+                "/photos/{index}.jpg"
+            )));
+            photo.picasa = None;
+            catalog.upsert_photo(&photo).unwrap();
+            catalog
+                .connection
+                .execute(
+                    "UPDATE photos SET captured_at = ?1 WHERE path = ?2",
+                    params![captured_at, format!("/photos/{index}.jpg")],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            catalog.photo_offset_for_month("/photos", 2026, 4).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            catalog.photo_offset_for_month("/photos", 2025, 4).unwrap(),
+            None
+        );
 
         let _ = std::fs::remove_file(path);
     }

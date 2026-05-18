@@ -15,7 +15,9 @@ use crate::debounce::Debouncer;
 use crate::folders::add_folder_once;
 use crate::grid::{columns_for_width, item_range_for_row, row_count};
 use crate::indexer::{IndexJob, IndexedPhoto, Indexer};
-use crate::photo_limit::{INITIAL_PHOTO_LIMIT, MAX_PHOTO_LIMIT, next_photo_limit};
+use crate::photo_limit::{
+    INITIAL_PHOTO_LIMIT, next_photo_limit, photo_window_trim_count, should_extend_photo_window,
+};
 use crate::scan_state::{begin_scan, finish_scan};
 use crate::thumbnails::{ThumbnailCache, ThumbnailState};
 use crate::ui_text::middle_truncate;
@@ -101,12 +103,16 @@ pub struct MyCasaApp {
     viewer: ViewerState,
     photos: Vec<Photo>,
     photo_limit: usize,
+    photo_window_start: usize,
+    all_photos_loaded: bool,
     folders: Vec<PathBuf>,
     albums: Vec<String>,
+    chronology_sections: Vec<ChronologicalSidebarSection>,
     selected_photo: Option<i64>,
     library_view_mode: LibraryViewMode,
     active_chronology_section: Option<ChronologySectionKey>,
     pending_chronology_scroll: Option<ChronologySectionKey>,
+    sidebar_auto_scroll_target: Option<ChronologySectionKey>,
     main_scroll: InertialScrollState,
     viewer_wheel_navigation: ViewerWheelNavigationState,
     status: String,
@@ -126,16 +132,24 @@ impl MyCasaApp {
         let mut status = String::from("Catalogue pret");
         let mut photos = Vec::new();
         let mut folders = Vec::new();
+        let mut chronology_sections = Vec::new();
+        let mut all_photos_loaded = true;
 
         if let Ok(catalog) = &catalog {
             match catalog.load_recent_photos(INITIAL_PHOTO_LIMIT) {
-                Ok(loaded) => photos = loaded,
+                Ok(loaded) => {
+                    all_photos_loaded = loaded.len() < INITIAL_PHOTO_LIMIT;
+                    photos = loaded;
+                }
                 Err(error) => {
                     status = format!("Catalogue ouvert, lecture photos impossible: {error}")
                 }
             }
             if let Ok(loaded_folders) = catalog.load_folders(50) {
                 folders = loaded_folders;
+            }
+            if let Ok(months) = catalog.chronology_months("") {
+                chronology_sections = chronological_sidebar_sections_from_months(months);
             }
         } else if let Err(error) = &catalog {
             status = format!("Catalogue indisponible: {error}");
@@ -148,16 +162,20 @@ impl MyCasaApp {
             viewer: ViewerState::default(),
             photos,
             photo_limit: INITIAL_PHOTO_LIMIT,
+            photo_window_start: 0,
+            all_photos_loaded,
             folders,
             albums: vec![
                 "Toutes les photos".to_owned(),
                 "Favoris".to_owned(),
                 "Import recent".to_owned(),
             ],
+            chronology_sections,
             selected_photo: None,
             library_view_mode: LibraryViewMode::RetroChronological,
             active_chronology_section: None,
             pending_chronology_scroll: None,
+            sidebar_auto_scroll_target: None,
             main_scroll: InertialScrollState::default(),
             viewer_wheel_navigation: ViewerWheelNavigationState::default(),
             status,
@@ -216,26 +234,133 @@ impl MyCasaApp {
         }
     }
 
-    fn load_more_photos(&mut self) {
-        let next_limit = next_photo_limit(self.photo_limit);
-        if next_limit == self.photo_limit {
-            self.status = format!("Limite d'affichage atteinte: {} photos", MAX_PHOTO_LIMIT);
+    fn extend_photo_window(&mut self, columns: usize, chronological: bool) {
+        if self.all_photos_loaded {
             return;
         }
 
+        let previous_loaded_count = self.photos.len();
+        let page_offset = self.photo_window_start + self.photos.len();
+        let next_limit = next_photo_limit(self.photo_limit);
+        let page_size = next_limit.saturating_sub(self.photo_limit);
         self.photo_limit = next_limit;
-        self.refresh_photos();
+
+        if let Ok(catalog) = &self.catalog {
+            match catalog.search_photos_page(&self.search, page_size, page_offset) {
+                Ok(mut photos) => {
+                    self.all_photos_loaded = photos.len() < page_size;
+                    self.photos.append(&mut photos);
+                    let evicted = self.trim_photo_window(columns, chronological);
+                    self.status = if self.all_photos_loaded {
+                        format!("{} photo(s) dans le catalogue", self.photos.len())
+                    } else if evicted > 0 {
+                        format!(
+                            "Chargement continu: fenetre {}-{} ({} evincees)",
+                            self.photo_window_start + 1,
+                            self.photo_window_start + self.photos.len(),
+                            evicted
+                        )
+                    } else {
+                        format!(
+                            "Chargement continu: {} -> {} photo(s)",
+                            previous_loaded_count,
+                            self.photos.len()
+                        )
+                    };
+                }
+                Err(error) => self.status = format!("Erreur catalogue: {error}"),
+            }
+        }
+    }
+
+    fn trim_photo_window(&mut self, columns: usize, chronological: bool) -> usize {
+        let evict_count = photo_window_trim_count(self.photos.len());
+        if evict_count == 0 {
+            return 0;
+        }
+
+        let scroll_delta = if chronological {
+            chronological_removed_prefix_height(&self.photos, evict_count, columns)
+        } else {
+            folder_removed_prefix_height(evict_count, columns)
+        };
+        self.photos.drain(..evict_count);
+        self.photo_window_start += evict_count;
+        self.main_scroll.offset = clamp_scroll_offset(
+            self.main_scroll.offset - scroll_delta,
+            self.main_scroll.max_offset,
+        );
+        evict_count
     }
 
     fn refresh_photos(&mut self) {
         if let Ok(catalog) = &self.catalog {
-            match catalog.search_photos(&self.search, self.photo_limit) {
+            let photos_result = catalog.search_photos(&self.search, self.photo_limit);
+            let chronology_result = catalog.chronology_months(&self.search);
+            match photos_result {
                 Ok(photos) => {
+                    self.all_photos_loaded = photos.len() < self.photo_limit;
                     self.photos = photos;
-                    self.status = format!("{} photo(s) dans le catalogue", self.photos.len());
+                    if let Ok(months) = chronology_result {
+                        self.chronology_sections =
+                            chronological_sidebar_sections_from_months(months);
+                    }
+                    self.photo_window_start = 0;
+                    self.status = if self.all_photos_loaded {
+                        format!("{} photo(s) dans le catalogue", self.photos.len())
+                    } else {
+                        format!("{} photo(s) chargee(s), suite au scroll", self.photos.len())
+                    };
                 }
                 Err(error) => self.status = format!("Erreur catalogue: {error}"),
             }
+        }
+    }
+
+    fn select_chronology_section(&mut self, key: ChronologySectionKey) {
+        self.library_view_mode = LibraryViewMode::RetroChronological;
+        self.active_chronology_section = Some(key);
+        self.pending_chronology_scroll = Some(key);
+        self.load_photo_window_at_month(key);
+    }
+
+    fn load_photo_window_at_month(&mut self, key: ChronologySectionKey) {
+        if let Ok(catalog) = &self.catalog {
+            let Ok(Some(offset)) =
+                catalog.photo_offset_for_month(&self.search, key.year, key.month)
+            else {
+                return;
+            };
+            match catalog.search_photos_page(&self.search, INITIAL_PHOTO_LIMIT, offset) {
+                Ok(photos) => {
+                    self.all_photos_loaded = photos.len() < INITIAL_PHOTO_LIMIT;
+                    self.photo_window_start = offset;
+                    self.photo_limit = offset + photos.len();
+                    self.photos = photos;
+                    self.main_scroll.offset = 0.0;
+                    self.main_scroll.velocity = 0.0;
+                }
+                Err(error) => self.status = format!("Erreur catalogue: {error}"),
+            }
+        }
+    }
+
+    fn reset_photo_window(&mut self) {
+        self.photo_limit = INITIAL_PHOTO_LIMIT;
+        self.photo_window_start = 0;
+        self.all_photos_loaded = false;
+        self.main_scroll.offset = 0.0;
+        self.main_scroll.velocity = 0.0;
+    }
+
+    fn maybe_extend_photo_window_after_scroll(&mut self, columns: usize, chronological: bool) {
+        if should_extend_photo_window(
+            self.main_scroll.offset,
+            self.main_scroll.max_offset,
+            self.photos.len(),
+            self.all_photos_loaded,
+        ) {
+            self.extend_photo_window(columns, chronological);
         }
     }
 
@@ -321,6 +446,13 @@ impl MyCasaApp {
 
     fn ui_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.visuals_mut().widgets.noninteractive.bg_fill = PANEL_BG;
+        let sidebar_hovered = ui
+            .ctx()
+            .input(|input| input.pointer.hover_pos())
+            .is_some_and(|position| ui.max_rect().contains(position));
+        if sidebar_hovered {
+            self.sidebar_auto_scroll_target = None;
+        }
         ScrollArea::vertical()
             .id_salt("sidebar_scroll")
             .auto_shrink([false, false])
@@ -346,7 +478,7 @@ impl MyCasaApp {
                         }
                     });
 
-                let chronology_sections = chronological_sidebar_sections(&self.photos);
+                let chronology_sections = self.chronology_sections.clone();
                 egui::CollapsingHeader::new(format!("Chronologie ({})", chronology_sections.len()))
                     .default_open(self.library_view_mode == LibraryViewMode::RetroChronological)
                     .show(ui, |ui| {
@@ -369,17 +501,14 @@ impl MyCasaApp {
                                         .selectable_label(year_active, section.year.to_string())
                                         .clicked()
                                     {
-                                        self.library_view_mode =
-                                            LibraryViewMode::RetroChronological;
-                                        self.active_chronology_section = section
-                                            .months
-                                            .first()
-                                            .map(|month| ChronologySectionKey {
+                                        if let Some(key) = section.months.first().map(|month| {
+                                            ChronologySectionKey {
                                                 year: section.year,
                                                 month: *month,
-                                            });
-                                        self.pending_chronology_scroll =
-                                            self.active_chronology_section;
+                                            }
+                                        }) {
+                                            self.select_chronology_section(key);
+                                        }
                                         self.status = format!("Chronologie: {}", section.year);
                                     }
                                 });
@@ -392,32 +521,31 @@ impl MyCasaApp {
                                                 .color(Color32::from_gray(120)),
                                         );
                                         let month_label = month_name(month);
+                                        let month_key = ChronologySectionKey {
+                                            year: section.year,
+                                            month,
+                                        };
                                         let month_active = self.library_view_mode
                                             == LibraryViewMode::RetroChronological
-                                            && self.active_chronology_section
-                                                == Some(ChronologySectionKey {
-                                                    year: section.year,
-                                                    month,
-                                                });
+                                            && self.active_chronology_section == Some(month_key);
                                         let response = ui
                                             .selectable_label(month_active, month_label)
                                             .on_hover_text(format!(
                                                 "{month_label} {}",
                                                 section.year
                                             ));
-                                        if month_active {
+                                        let (should_scroll, next_target) =
+                                            sidebar_auto_scroll_action(
+                                                self.sidebar_auto_scroll_target,
+                                                Some(month_key),
+                                                sidebar_hovered,
+                                            );
+                                        if month_active && should_scroll {
                                             response.scroll_to_me(Some(Align::Center));
                                         }
+                                        self.sidebar_auto_scroll_target = next_target;
                                         if response.clicked() {
-                                            self.library_view_mode =
-                                                LibraryViewMode::RetroChronological;
-                                            self.active_chronology_section =
-                                                Some(ChronologySectionKey {
-                                                    year: section.year,
-                                                    month,
-                                                });
-                                            self.pending_chronology_scroll =
-                                                self.active_chronology_section;
+                                            self.select_chronology_section(month_key);
                                             self.status = format!(
                                                 "Chronologie: {month_label} {}",
                                                 section.year
@@ -580,10 +708,12 @@ impl MyCasaApp {
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Charger plus").clicked() {
-                    self.load_more_photos();
-                }
-                ui.label(format!("limite {}", self.photo_limit));
+                let loading_status = if self.all_photos_loaded {
+                    "catalogue complet"
+                } else {
+                    "scroll continu"
+                };
+                ui.label(RichText::new(loading_status).color(Color32::from_gray(115)));
             });
         });
         ui.add_space(4.0);
@@ -685,6 +815,7 @@ impl MyCasaApp {
             output.content_size,
             output.inner_rect,
         );
+        self.maybe_extend_photo_window_after_scroll(columns, false);
     }
 
     fn ui_retrochronological_grid(&mut self, ui: &mut egui::Ui) {
@@ -701,6 +832,7 @@ impl MyCasaApp {
             }
         }
 
+        let previous_active_chronology_section = self.active_chronology_section;
         let mut active_chronology_section = self.active_chronology_section;
         let output = self.main_scroll_area().show_viewport(ui, |ui, viewport| {
             ui.set_min_height(total_height);
@@ -737,12 +869,16 @@ impl MyCasaApp {
             }
         });
         self.active_chronology_section = active_chronology_section;
+        if active_chronology_section != previous_active_chronology_section {
+            self.sidebar_auto_scroll_target = active_chronology_section;
+        }
         self.sync_main_scroll_from_output(
             ui,
             output.state.offset.y,
             output.content_size,
             output.inner_rect,
         );
+        self.maybe_extend_photo_window_after_scroll(columns, true);
     }
 
     fn main_scroll_area(&self) -> ScrollArea {
@@ -1075,8 +1211,10 @@ impl MyCasaApp {
                 ui.label(RichText::new(&self.status).color(Color32::from_gray(55)));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(format!(
-                        "{} photos | cache:{} gen:{} pending:{} active:{} fps:{:.0}",
+                        "{} photos | win:{}-{} | cache:{} gen:{} pending:{} active:{} fps:{:.0}",
                         self.photos.len(),
+                        self.photo_window_start + 1,
+                        self.photo_window_start + self.photos.len(),
                         metrics.cache_hits,
                         metrics.generated,
                         metrics.pending,
@@ -1368,6 +1506,39 @@ fn chronological_section_offset(
         })
 }
 
+fn sidebar_auto_scroll_action(
+    target: Option<ChronologySectionKey>,
+    row: Option<ChronologySectionKey>,
+    sidebar_hovered: bool,
+) -> (bool, Option<ChronologySectionKey>) {
+    if sidebar_hovered {
+        return (false, None);
+    }
+
+    match (target, row) {
+        (Some(target), Some(row)) if target == row => (true, None),
+        _ => (false, target),
+    }
+}
+
+fn folder_removed_prefix_height(removed_photos: usize, columns: usize) -> f32 {
+    let removed_rows = row_count(removed_photos, columns.max(1));
+    removed_rows as f32 * (TILE_HEIGHT + TILE_PADDING)
+}
+
+fn chronological_removed_prefix_height(
+    photos: &[Photo],
+    removed_photos: usize,
+    columns: usize,
+) -> f32 {
+    let prefix_len = removed_photos.min(photos.len());
+    let rows = retrochronological_grid_rows(&photos[..prefix_len], columns);
+    chronological_row_layout(&rows)
+        .last()
+        .map(|(_, bottom)| *bottom)
+        .unwrap_or(0.0)
+}
+
 fn draw_chronology_header(ui: &egui::Ui, rect: egui::Rect, label: &str) {
     ui.painter()
         .rect_filled(rect, 0.0, Color32::from_rgb(238, 239, 239));
@@ -1440,8 +1611,9 @@ fn chronological_sidebar_years(photos: &[Photo]) -> Vec<i32> {
         .collect()
 }
 
+#[cfg(test)]
 fn chronological_sidebar_sections(photos: &[Photo]) -> Vec<ChronologicalSidebarSection> {
-    let mut entries: Vec<(i32, u32)> = photos
+    let entries: Vec<(i32, u32)> = photos
         .iter()
         .filter_map(|photo| {
             let timestamp = photo_time_key(photo);
@@ -1454,6 +1626,12 @@ fn chronological_sidebar_sections(photos: &[Photo]) -> Vec<ChronologicalSidebarS
             }
         })
         .collect();
+    chronological_sidebar_sections_from_months(entries)
+}
+
+fn chronological_sidebar_sections_from_months(
+    mut entries: Vec<(i32, u32)>,
+) -> Vec<ChronologicalSidebarSection> {
     entries.sort_unstable_by(|left, right| right.cmp(left));
     entries.dedup();
 
@@ -1539,6 +1717,7 @@ impl eframe::App for MyCasaApp {
         self.update_frame_metrics();
         self.poll_background_work();
         if self.search_debouncer.should_run(Instant::now()) {
+            self.reset_photo_window();
             self.refresh_photos();
         }
 
@@ -2023,6 +2202,65 @@ mod tests {
                 },
             ),
             None
+        );
+    }
+
+    #[test]
+    fn sidebar_auto_scroll_runs_once_for_matching_active_month() {
+        let april = ChronologySectionKey {
+            year: 2026,
+            month: 4,
+        };
+        let march = ChronologySectionKey {
+            year: 2026,
+            month: 3,
+        };
+
+        assert_eq!(
+            sidebar_auto_scroll_action(Some(april), Some(march), false),
+            (false, Some(april))
+        );
+        assert_eq!(
+            sidebar_auto_scroll_action(Some(april), Some(april), false),
+            (true, None)
+        );
+    }
+
+    #[test]
+    fn sidebar_auto_scroll_is_cancelled_while_sidebar_is_hovered() {
+        let april = ChronologySectionKey {
+            year: 2026,
+            month: 4,
+        };
+
+        assert_eq!(
+            sidebar_auto_scroll_action(Some(april), Some(april), true),
+            (false, None)
+        );
+    }
+
+    #[test]
+    fn removed_folder_prefix_height_preserves_scroll_position_after_eviction() {
+        assert_eq!(
+            folder_removed_prefix_height(10, 4),
+            3.0 * (TILE_HEIGHT + TILE_PADDING)
+        );
+    }
+
+    #[test]
+    fn removed_chronological_prefix_height_accounts_for_month_headers() {
+        let mut april_1 = photo_for_test(1);
+        april_1.captured_at = Some("2026-04-10T10:00:00Z".to_owned());
+        let mut april_2 = photo_for_test(2);
+        april_2.captured_at = Some("2026-04-09T10:00:00Z".to_owned());
+        let mut march = photo_for_test(3);
+        march.captured_at = Some("2026-03-01T10:00:00Z".to_owned());
+
+        let photos = vec![april_1, april_2, march];
+
+        assert_eq!(
+            chronological_removed_prefix_height(&photos, 2, 2),
+            chrono_section_row_height()
         );
     }
 
