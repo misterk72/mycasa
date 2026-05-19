@@ -117,6 +117,15 @@ pub struct ViewerMetrics {
     pub failed_loads: usize,
     pub pending_full_loads: usize,
     pub cached_images: usize,
+    pub current_source: Option<ViewerDisplayedSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewerDisplayedSource {
+    MemoryCache,
+    DiskCache,
+    Original,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +133,16 @@ enum ViewerImageSource {
     DiskCache,
     Original,
     Failed,
+}
+
+impl From<ViewerImageSource> for ViewerDisplayedSource {
+    fn from(source: ViewerImageSource) -> Self {
+        match source {
+            ViewerImageSource::DiskCache => Self::DiskCache,
+            ViewerImageSource::Original => Self::Original,
+            ViewerImageSource::Failed => Self::Failed,
+        }
+    }
 }
 
 impl ViewerMessage {
@@ -186,6 +205,7 @@ impl ViewerState {
         ViewerMetrics {
             pending_full_loads: self.pending_full_loads.len(),
             cached_images: self.preloaded_images.len(),
+            current_source: self.metrics.current_source,
             ..self.metrics
         }
     }
@@ -197,6 +217,7 @@ impl ViewerState {
         self.full_texture = None;
         self.loading = false;
         self.transition = None;
+        self.metrics.current_source = None;
     }
 
     pub fn open(&mut self, photo: Photo) {
@@ -221,6 +242,7 @@ impl ViewerState {
         self.preview_texture = None;
         self.full_texture = None;
         self.loading = false;
+        self.metrics.current_source = None;
         self.transition = previous_texture.map(|(direction, previous_texture)| ViewerTransition {
             direction,
             elapsed: 0.0,
@@ -576,15 +598,8 @@ impl ViewerState {
                     }
                     let metrics = self.metrics();
                     ui.label(
-                        RichText::new(format!(
-                            "viewer mem:{} disk:{} orig:{} fail:{} pending:{}",
-                            metrics.memory_cache_hits,
-                            metrics.disk_cache_hits,
-                            metrics.original_decodes,
-                            metrics.failed_loads,
-                            metrics.pending_full_loads
-                        ))
-                        .color(Color32::from_gray(105)),
+                        RichText::new(viewer_cache_status_text(metrics))
+                            .color(Color32::from_gray(105)),
                     );
                 });
             },
@@ -617,6 +632,7 @@ impl ViewerState {
                     self.record_full_load_source(id, source);
                     self.loading = false;
                     self.loaded_photo_id = Some(id);
+                    self.metrics.current_source = Some(source.into());
                     self.full_texture = image.map(|image| {
                         self.remember_preloaded_image(id, image.clone());
                         let texture_name = format!("viewer-photo-{}", id);
@@ -646,6 +662,7 @@ impl ViewerState {
             self.loaded_photo_id = Some(photo.id);
             self.loading = false;
             self.pending_full_loads.remove(&photo.id);
+            self.metrics.current_source = Some(ViewerDisplayedSource::MemoryCache);
             ctx.request_repaint();
             return;
         }
@@ -929,6 +946,28 @@ pub fn viewer_transition_offsets(
     match direction {
         NavigationDirection::Previous => (progress * distance, -(1.0 - progress) * distance),
         NavigationDirection::Next => (-progress * distance, (1.0 - progress) * distance),
+    }
+}
+
+pub fn viewer_cache_status_text(metrics: ViewerMetrics) -> String {
+    format!(
+        "viewer source:{} mem:{} disk:{} orig:{} err:{} att:{}",
+        viewer_displayed_source_label(metrics.current_source),
+        metrics.memory_cache_hits,
+        metrics.disk_cache_hits,
+        metrics.original_decodes,
+        metrics.failed_loads,
+        metrics.pending_full_loads
+    )
+}
+
+fn viewer_displayed_source_label(source: Option<ViewerDisplayedSource>) -> &'static str {
+    match source {
+        Some(ViewerDisplayedSource::MemoryCache) => "memoire",
+        Some(ViewerDisplayedSource::DiskCache) => "cache",
+        Some(ViewerDisplayedSource::Original) => "original",
+        Some(ViewerDisplayedSource::Failed) => "erreur",
+        None => "attente",
     }
 }
 
@@ -1522,6 +1561,42 @@ mod tests {
             viewer_transition_offsets(NavigationDirection::Next, 2.0, 400.0),
             (-400.0, 0.0)
         );
+    }
+
+    #[test]
+    fn viewer_cache_status_text_names_current_source() {
+        let metrics = ViewerMetrics {
+            memory_cache_hits: 2,
+            disk_cache_hits: 3,
+            original_decodes: 4,
+            failed_loads: 1,
+            pending_full_loads: 5,
+            cached_images: 8,
+            current_source: Some(ViewerDisplayedSource::DiskCache),
+        };
+
+        assert_eq!(
+            viewer_cache_status_text(metrics),
+            "viewer source:cache mem:2 disk:3 orig:4 err:1 att:5"
+        );
+    }
+
+    #[test]
+    fn viewer_cache_status_text_reports_waiting_without_source() {
+        assert_eq!(
+            viewer_cache_status_text(ViewerMetrics::default()),
+            "viewer source:attente mem:0 disk:0 orig:0 err:0 att:0"
+        );
+    }
+
+    #[test]
+    fn open_resets_current_viewer_source() {
+        let mut viewer = ViewerState::default();
+        viewer.metrics.current_source = Some(ViewerDisplayedSource::Original);
+
+        viewer.open(photo_for_test(1));
+
+        assert_eq!(viewer.metrics().current_source, None);
     }
 
     #[test]

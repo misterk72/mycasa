@@ -21,6 +21,8 @@ Valider rapidement que MyCasa peut afficher un dossier photo NAS avec une experi
 - `scans` : indexations actives.
 - `dbq` : photos en attente d'ecriture catalogue.
 - `fps` : compteur approximatif de frames par seconde.
+- `viewer source` : origine de l'image 1600 px courante dans le viewer (`memoire`, `cache`, `original`, `erreur`, `attente`).
+- `viewer mem/disk/orig/err/att` : hits memoire viewer, hits cache disque 1600 px, decodages originaux, erreurs et decodages en attente.
 
 ## Profilage Decodage Viewer
 Commande locale :
