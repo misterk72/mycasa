@@ -19,7 +19,7 @@ const VIEWER_MIN_SIZE: Vec2 = Vec2::new(980.0, 680.0);
 #[cfg(test)]
 const VIEWER_MAX_SIZE: Vec2 = Vec2::new(1280.0, 880.0);
 const VIEWER_TOOL_PANEL_WIDTH: f32 = 210.0;
-const VIEWER_FILMSTRIP_HEIGHT: f32 = 34.0;
+const VIEWER_FILMSTRIP_HEIGHT: f32 = 68.0;
 const VIEWER_BG: Color32 = Color32::from_rgb(224, 226, 229);
 const VIEWER_PANEL_BG: Color32 = Color32::from_rgb(238, 240, 244);
 const VIEWER_CANVAS_BG: Color32 = Color32::from_rgb(154, 154, 154);
@@ -40,8 +40,8 @@ const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
 const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
 const VIEWER_FILMSTRIP_RADIUS: usize = 2;
-const VIEWER_FILMSTRIP_THUMB_SIZE: f32 = 30.0;
-const VIEWER_FILMSTRIP_THUMB_GAP: f32 = 5.0;
+const VIEWER_FILMSTRIP_THUMB_SIZE: f32 = 60.0;
+const VIEWER_FILMSTRIP_THUMB_GAP: f32 = 8.0;
 const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 9;
 const VIEWER_MAX_PENDING_FULL_LOADS: usize = 4;
 const VIEWER_DISK_CACHE_DIR: &str = "viewer";
@@ -1143,6 +1143,13 @@ mod tests {
 
         assert_eq!(filmstrip.width(), 1920.0);
         assert_eq!(filmstrip.height(), VIEWER_FILMSTRIP_HEIGHT);
+    }
+
+    #[test]
+    fn viewer_filmstrip_uses_larger_readable_thumbnails() {
+        assert_eq!(VIEWER_FILMSTRIP_THUMB_SIZE, 60.0);
+        assert_eq!(VIEWER_FILMSTRIP_HEIGHT, 68.0);
+        assert!(VIEWER_FILMSTRIP_HEIGHT > VIEWER_FILMSTRIP_THUMB_SIZE);
     }
 
     #[test]
