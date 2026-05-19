@@ -71,23 +71,50 @@ pub struct ViewerState {
     preloaded_images: HashMap<i64, ColorImage>,
     preload_order: VecDeque<i64>,
     pending_full_loads: HashSet<i64>,
+    failed_full_loads: HashSet<i64>,
+    metrics: ViewerMetrics,
     loading: bool,
     navigation_request: Option<ViewerNavigationRequest>,
 }
 
 enum ViewerMessage {
-    Preview { id: i64, image: ColorImage },
-    Full { id: i64, image: Option<ColorImage> },
+    Preview {
+        id: i64,
+        image: ColorImage,
+    },
+    Full {
+        id: i64,
+        image: Option<ColorImage>,
+        source: ViewerImageSource,
+    },
 }
 
 struct ViewerImageLoad {
     image: Option<ColorImage>,
     cache_write: Option<ViewerCacheWrite>,
+    source: ViewerImageSource,
 }
 
 struct ViewerCacheWrite {
     path: PathBuf,
     image: image::DynamicImage,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ViewerMetrics {
+    pub memory_cache_hits: usize,
+    pub disk_cache_hits: usize,
+    pub original_decodes: usize,
+    pub failed_loads: usize,
+    pub pending_full_loads: usize,
+    pub cached_images: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewerImageSource {
+    DiskCache,
+    Original,
+    Failed,
 }
 
 impl ViewerMessage {
@@ -116,6 +143,8 @@ impl Default for ViewerState {
             preloaded_images: HashMap::new(),
             preload_order: VecDeque::new(),
             pending_full_loads: HashSet::new(),
+            failed_full_loads: HashSet::new(),
+            metrics: ViewerMetrics::default(),
             loading: false,
             navigation_request: None,
         }
@@ -143,6 +172,14 @@ impl ViewerState {
         self.loaded_photo_id == Some(current_id)
     }
 
+    pub fn metrics(&self) -> ViewerMetrics {
+        ViewerMetrics {
+            pending_full_loads: self.pending_full_loads.len(),
+            cached_images: self.preloaded_images.len(),
+            ..self.metrics
+        }
+    }
+
     pub fn close(&mut self) {
         self.current = None;
         self.loaded_photo_id = None;
@@ -152,6 +189,7 @@ impl ViewerState {
     }
 
     pub fn open(&mut self, photo: Photo) {
+        self.failed_full_loads.remove(&photo.id);
         self.current = Some(photo);
         self.zoom = 1.0;
         self.loaded_photo_id = None;
@@ -169,6 +207,7 @@ impl ViewerState {
             if current_id == Some(photo.id)
                 || self.preloaded_images.contains_key(&photo.id)
                 || self.pending_full_loads.contains(&photo.id)
+                || self.failed_full_loads.contains(&photo.id)
             {
                 continue;
             }
@@ -179,10 +218,11 @@ impl ViewerState {
 
     pub fn poll_background_results(&mut self) {
         while let Ok(message) = self.receiver.try_recv() {
-            let ViewerMessage::Full { id, image } = message else {
+            let ViewerMessage::Full { id, image, source } = message else {
                 continue;
             };
             self.pending_full_loads.remove(&id);
+            self.record_full_load_source(id, source);
             if let Some(image) = image {
                 self.remember_preloaded_image(id, image);
             }
@@ -497,6 +537,18 @@ impl ViewerState {
                                 .color(Color32::from_gray(85)),
                         );
                     }
+                    let metrics = self.metrics();
+                    ui.label(
+                        RichText::new(format!(
+                            "viewer mem:{} disk:{} orig:{} fail:{} pending:{}",
+                            metrics.memory_cache_hits,
+                            metrics.disk_cache_hits,
+                            metrics.original_decodes,
+                            metrics.failed_loads,
+                            metrics.pending_full_loads
+                        ))
+                        .color(Color32::from_gray(105)),
+                    );
                 });
             },
         );
@@ -508,10 +560,11 @@ impl ViewerState {
                 Ok(message)
                     if !message_matches_current_photo(self.current_photo_id(), &message) =>
                 {
-                    let ViewerMessage::Full { id, image } = message else {
+                    let ViewerMessage::Full { id, image, source } = message else {
                         continue;
                     };
                     self.pending_full_loads.remove(&id);
+                    self.record_full_load_source(id, source);
                     if let Some(image) = image {
                         self.remember_preloaded_image(id, image);
                     }
@@ -522,8 +575,9 @@ impl ViewerState {
                         Some(ctx.load_texture(texture_name, image, TextureOptions::LINEAR));
                     ctx.request_repaint();
                 }
-                Ok(ViewerMessage::Full { id, image }) => {
+                Ok(ViewerMessage::Full { id, image, source }) => {
                     self.pending_full_loads.remove(&id);
+                    self.record_full_load_source(id, source);
                     self.loading = false;
                     self.loaded_photo_id = Some(id);
                     self.full_texture = image.map(|image| {
@@ -549,6 +603,7 @@ impl ViewerState {
         }
 
         if let Some(image) = self.cached_viewer_image(photo.id) {
+            self.metrics.memory_cache_hits += 1;
             let texture_name = format!("viewer-photo-{}", photo.id);
             self.full_texture = Some(ctx.load_texture(texture_name, image, TextureOptions::LINEAR));
             self.loaded_photo_id = Some(photo.id);
@@ -590,6 +645,7 @@ impl ViewerState {
             let _ = sender.send(ViewerMessage::Full {
                 id: photo.id,
                 image: loaded.image,
+                source: loaded.source,
             });
             repaint_context.request_repaint();
 
@@ -613,6 +669,24 @@ impl ViewerState {
             self.mark_preloaded_image_recent(id);
         }
         image
+    }
+
+    fn record_full_load_source(&mut self, id: i64, source: ViewerImageSource) {
+        match source {
+            ViewerImageSource::DiskCache => {
+                self.failed_full_loads.remove(&id);
+                self.metrics.disk_cache_hits += 1;
+            }
+            ViewerImageSource::Original => {
+                self.failed_full_loads.remove(&id);
+                self.metrics.original_decodes += 1;
+            }
+            ViewerImageSource::Failed => {
+                if self.failed_full_loads.insert(id) {
+                    self.metrics.failed_loads += 1;
+                }
+            }
+        }
     }
 
     fn mark_preloaded_image_recent(&mut self, id: i64) {
@@ -903,6 +977,7 @@ fn load_viewer_image_for_display(photo: &Photo) -> ViewerImageLoad {
             return ViewerImageLoad {
                 image: Some(image),
                 cache_write: None,
+                source: ViewerImageSource::DiskCache,
             };
         }
     }
@@ -914,6 +989,7 @@ fn load_viewer_image_for_display(photo: &Photo) -> ViewerImageLoad {
         return ViewerImageLoad {
             image: None,
             cache_write: None,
+            source: ViewerImageSource::Failed,
         };
     };
 
@@ -923,6 +999,7 @@ fn load_viewer_image_for_display(photo: &Photo) -> ViewerImageLoad {
     ViewerImageLoad {
         image: Some(color_image),
         cache_write,
+        source: ViewerImageSource::Original,
     }
 }
 
@@ -1218,7 +1295,11 @@ mod tests {
 
     #[test]
     fn ignores_messages_for_previous_photo() {
-        let message = ViewerMessage::Full { id: 2, image: None };
+        let message = ViewerMessage::Full {
+            id: 2,
+            image: None,
+            source: ViewerImageSource::Failed,
+        };
 
         assert!(message_matches_current_photo(Some(2), &message));
         assert!(!message_matches_current_photo(Some(1), &message));
@@ -1328,6 +1409,7 @@ mod tests {
 
         assert!(loaded.image.is_some());
         assert!(loaded.cache_write.is_some());
+        assert_eq!(loaded.source, ViewerImageSource::Original);
         assert!(!cache_path.exists());
 
         save_viewer_cache_image(loaded.cache_write.unwrap());
@@ -1337,8 +1419,129 @@ mod tests {
         let cached = load_viewer_image_for_display(&photo);
         assert!(cached.image.is_some());
         assert!(cached.cache_write.is_none());
+        assert_eq!(cached.source, ViewerImageSource::DiskCache);
 
         let _ = std::fs::remove_file(cache_path);
+    }
+
+    #[test]
+    fn viewer_metrics_count_memory_cache_hits() {
+        let ctx = egui::Context::default();
+        let photo = photo_for_test(17);
+        let mut viewer = ViewerState::default();
+        viewer.remember_preloaded_image(photo.id, color_image_for_test(17));
+
+        viewer.open(photo.clone());
+        viewer.ensure_loading(&ctx, &photo);
+
+        let metrics = viewer.metrics();
+        assert_eq!(metrics.memory_cache_hits, 1);
+        assert_eq!(metrics.cached_images, 1);
+        assert_eq!(metrics.pending_full_loads, 0);
+    }
+
+    #[test]
+    fn viewer_metrics_count_background_load_sources() {
+        let ctx = egui::Context::default();
+        let photo = photo_for_test(18);
+        let mut viewer = ViewerState::default();
+        viewer.open(photo.clone());
+        viewer.pending_full_loads.insert(photo.id);
+
+        viewer
+            .sender
+            .send(ViewerMessage::Full {
+                id: photo.id,
+                image: Some(color_image_for_test(18)),
+                source: ViewerImageSource::DiskCache,
+            })
+            .unwrap();
+        viewer.poll_loaded(&ctx);
+
+        let metrics = viewer.metrics();
+        assert_eq!(metrics.disk_cache_hits, 1);
+        assert_eq!(metrics.original_decodes, 0);
+        assert_eq!(metrics.failed_loads, 0);
+        assert_eq!(metrics.pending_full_loads, 0);
+    }
+
+    #[test]
+    fn viewer_metrics_count_failed_loads() {
+        let ctx = egui::Context::default();
+        let photo = photo_for_test(19);
+        let mut viewer = ViewerState::default();
+        viewer.open(photo.clone());
+        viewer.pending_full_loads.insert(photo.id);
+
+        viewer
+            .sender
+            .send(ViewerMessage::Full {
+                id: photo.id,
+                image: None,
+                source: ViewerImageSource::Failed,
+            })
+            .unwrap();
+        viewer.poll_loaded(&ctx);
+
+        assert_eq!(viewer.metrics().failed_loads, 1);
+    }
+
+    #[test]
+    fn viewer_metrics_count_repeated_preload_failures_once() {
+        let photo = photo_for_test(20);
+        let mut viewer = ViewerState::default();
+        viewer.open(photo_for_test(1));
+
+        viewer.pending_full_loads.insert(photo.id);
+        viewer
+            .sender
+            .send(ViewerMessage::Full {
+                id: photo.id,
+                image: None,
+                source: ViewerImageSource::Failed,
+            })
+            .unwrap();
+        viewer.pending_full_loads.insert(photo.id);
+        viewer
+            .sender
+            .send(ViewerMessage::Full {
+                id: photo.id,
+                image: None,
+                source: ViewerImageSource::Failed,
+            })
+            .unwrap();
+
+        viewer.poll_background_results();
+
+        assert_eq!(viewer.metrics().failed_loads, 1);
+        assert!(viewer.failed_full_loads.contains(&photo.id));
+    }
+
+    #[test]
+    fn viewer_preload_skips_failed_full_loads() {
+        let ctx = egui::Context::default();
+        let failed = photo_for_test(21);
+        let next = photo_for_test(22);
+        let mut viewer = ViewerState::default();
+        viewer.open(photo_for_test(1));
+        viewer.failed_full_loads.insert(failed.id);
+
+        viewer.preload_photos(&ctx, &[failed.clone(), next.clone()]);
+
+        assert!(!viewer.pending_full_loads.contains(&failed.id));
+        assert!(viewer.pending_full_loads.contains(&next.id));
+    }
+
+    #[test]
+    fn viewer_open_allows_retry_after_failed_preload() {
+        let photo = photo_for_test(23);
+        let mut viewer = ViewerState::default();
+        viewer.failed_full_loads.insert(photo.id);
+
+        viewer.open(photo.clone());
+
+        assert!(!viewer.failed_full_loads.contains(&photo.id));
+        assert_eq!(viewer.current_photo_id(), Some(photo.id));
     }
 
     #[test]
@@ -1370,6 +1573,7 @@ mod tests {
             .send(ViewerMessage::Full {
                 id: photo.id,
                 image: Some(color_image_for_test(11)),
+                source: ViewerImageSource::Original,
             })
             .unwrap();
         viewer.poll_loaded(&ctx);
@@ -1392,6 +1596,7 @@ mod tests {
             .send(ViewerMessage::Full {
                 id: photo.id,
                 image: Some(color_image_for_test(14)),
+                source: ViewerImageSource::Original,
             })
             .unwrap();
         viewer.poll_background_results();
