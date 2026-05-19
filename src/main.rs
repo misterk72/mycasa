@@ -1,6 +1,7 @@
 mod app;
 mod catalog;
 mod debounce;
+mod decode_profile;
 mod folders;
 mod grid;
 mod indexer;
@@ -15,6 +16,21 @@ mod viewer;
 use app::MyCasaApp;
 
 fn main() -> eframe::Result {
+    let mut args = std::env::args_os();
+    let _program = args.next();
+    if matches!(
+        args.next()
+            .and_then(|arg| arg.into_string().ok())
+            .as_deref(),
+        Some("--profile-decode")
+    ) {
+        if let Err(error) = decode_profile::run_cli(args.collect()) {
+            eprintln!("{error:#}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()

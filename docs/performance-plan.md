@@ -22,6 +22,34 @@ Valider rapidement que MyCasa peut afficher un dossier photo NAS avec une experi
 - `dbq` : photos en attente d'ecriture catalogue.
 - `fps` : compteur approximatif de frames par seconde.
 
+## Profilage Decodage Viewer
+Commande locale :
+
+```bash
+cargo build
+target/debug/mycasa --profile-decode --limit 12 /mnt/nas_Media/Photos_sorted/2026/04
+```
+
+Colonnes importantes :
+- `decode_ms` : lecture/decompression du format original.
+- `resize_ms` : reduction vers la preview viewer 1600 px.
+- `rgba_ms` : conversion vers le buffer RGBA envoye a egui.
+- `display_ready_ms` : cout avant affichage possible (`decode + resize + rgba`).
+- `png_encode_ms` : cout d'ecriture du cache disque 1600 px, maintenant decale apres l'envoi au viewer.
+- `png_decode_ms` : cout estime de relecture du cache viewer 1600 px.
+
+Resultat sur un echantillon NAS 2026/04 :
+- En debug non optimise, le pipeline image etait trop lent pour juger la fluidite.
+- Avec optimisation dev ciblee sur les crates image/JPEG/PNG, `target/debug/mycasa` descend a environ 491 ms par image pour le premier passage complet, dont environ 281 ms avant affichage possible.
+- Le cache PNG 1600 px se relit autour de 31 ms sur l'echantillon, donc les retours sur une photo deja mise en cache doivent etre nettement plus rapides que le premier decode original.
+- HEIC/HEIF echoue encore dans le profileur, ce qui confirme que le decodeur courant ne couvre pas ce format.
+
+Decision technique provisoire :
+- Le rendu GPU `wgpu` accelere l'affichage et l'upload texture, mais pas la decompression JPEG/HEIC elle-meme.
+- Le gain court terme le plus fiable est CPU/SIMD + cache local : build dev optimise pour les crates de decode, affichage avant ecriture du cache, prechargement autour de la photo courante et cache 1600 px persistant.
+- L'acceleration materielle JPEG via GPU n'est pas une cible V1 portable simple Windows/Linux. A etudier plus tard uniquement si le pipeline CPU/SIMD + cache ne suffit pas.
+- Pour HEIC, la piste portable reste un backend natif type libheif/libde265, avec packaging Windows/Linux a valider avant activation.
+
 ## Priorites D'Implementation
 1. Virtualiser la grille avec `show_rows`.
 2. Tester et exposer les metriques de miniatures.
@@ -53,4 +81,6 @@ Chaque changement de logique doit commencer par un test rouge, puis passer au ve
 - Viewer charge une preview depuis le cache miniature avant l image 1600 px, ignore les reponses obsoletes, et adapte sa taille initiale au ratio de la photo.
 - Le viewer conserve un cache memoire borne des images 1600 px prechargees, draine les decodages termines meme quand la phototheque est affichee, limite les decodages concurrents, et attend que l'image courante soit chargee avant de lancer les prechargements voisins.
 - Le viewer persiste aussi les images 1600 px dans un cache disque local pour eviter de relire et redecompiler les originaux NAS apres le premier affichage.
+- Le viewer envoie maintenant l'image decodee a l'UI avant d'ecrire le cache PNG 1600 px, afin que l'encodage cache ne bloque plus le premier affichage.
+- Un mode CLI `--profile-decode` mesure le pipeline image sur de vrais dossiers sans lancer l'interface.
 - Le format HEIC/HEIF n'est pas encore pris en charge par le decodeur actuel ; il doit etre ajoute avec un backend natif portable et teste avant activation dans l'indexeur.

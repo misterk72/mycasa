@@ -80,6 +80,16 @@ enum ViewerMessage {
     Full { id: i64, image: Option<ColorImage> },
 }
 
+struct ViewerImageLoad {
+    image: Option<ColorImage>,
+    cache_write: Option<ViewerCacheWrite>,
+}
+
+struct ViewerCacheWrite {
+    path: PathBuf,
+    image: image::DynamicImage,
+}
+
 impl ViewerMessage {
     fn id(&self) -> i64 {
         match self {
@@ -576,12 +586,16 @@ impl ViewerState {
                 repaint_context.request_repaint();
             }
 
-            let image = load_viewer_image(&photo);
+            let loaded = load_viewer_image_for_display(&photo);
             let _ = sender.send(ViewerMessage::Full {
                 id: photo.id,
-                image,
+                image: loaded.image,
             });
             repaint_context.request_repaint();
+
+            if let Some(cache_write) = loaded.cache_write {
+                save_viewer_cache_image(cache_write);
+            }
         });
     }
 
@@ -873,25 +887,52 @@ pub fn adjacent_photo_id(
     photos.get(adjacent_index).map(|photo| photo.id)
 }
 
+#[cfg(test)]
 fn load_viewer_image(photo: &Photo) -> Option<ColorImage> {
+    let loaded = load_viewer_image_for_display(photo);
+    if let Some(cache_write) = loaded.cache_write {
+        save_viewer_cache_image(cache_write);
+    }
+    loaded.image
+}
+
+fn load_viewer_image_for_display(photo: &Photo) -> ViewerImageLoad {
     let cache_path = viewer_cache_path(photo);
     if let Some(cache_path) = &cache_path {
         if let Some(image) = load_viewer_cache_image(cache_path) {
-            return Some(image);
+            return ViewerImageLoad {
+                image: Some(image),
+                cache_write: None,
+            };
         }
     }
 
-    let image = image::open(&photo.path)
-        .ok()?
-        .thumbnail(VIEWER_IMAGE_MAX_EDGE, VIEWER_IMAGE_MAX_EDGE);
-    if let Some(cache_path) = &cache_path {
-        if let Some(parent) = cache_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = image.save_with_format(cache_path, ImageFormat::Png);
-    }
+    let Some(image) = image::open(&photo.path)
+        .ok()
+        .map(|image| image.thumbnail(VIEWER_IMAGE_MAX_EDGE, VIEWER_IMAGE_MAX_EDGE))
+    else {
+        return ViewerImageLoad {
+            image: None,
+            cache_write: None,
+        };
+    };
 
-    Some(dynamic_to_color_image(image))
+    let color_image = dynamic_to_color_image(&image);
+    let cache_write = cache_path.map(|path| ViewerCacheWrite { path, image });
+
+    ViewerImageLoad {
+        image: Some(color_image),
+        cache_write,
+    }
+}
+
+fn save_viewer_cache_image(cache_write: ViewerCacheWrite) {
+    if let Some(parent) = cache_write.path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = cache_write
+        .image
+        .save_with_format(cache_write.path, ImageFormat::Png);
 }
 
 fn load_viewer_cache_image(path: &PathBuf) -> Option<ColorImage> {
@@ -899,10 +940,12 @@ fn load_viewer_cache_image(path: &PathBuf) -> Option<ColorImage> {
         return None;
     }
 
-    image::open(path).ok().map(dynamic_to_color_image)
+    image::open(path)
+        .ok()
+        .map(|image| dynamic_to_color_image(&image))
 }
 
-fn dynamic_to_color_image(image: image::DynamicImage) -> ColorImage {
+fn dynamic_to_color_image(image: &image::DynamicImage) -> ColorImage {
     let image = image.to_rgba8();
     rgba_to_color_image(image)
 }
@@ -1251,6 +1294,42 @@ mod tests {
         let second = load_viewer_image(&photo).unwrap();
 
         assert_eq!(first.size, second.size);
+
+        let _ = std::fs::remove_file(cache_path);
+    }
+
+    #[test]
+    fn load_viewer_image_for_display_defers_disk_cache_write() {
+        let source_path = std::env::temp_dir().join(format!(
+            "mycasa-viewer-deferred-source-{}-{}.png",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let mut photo = photo_for_test(72);
+        photo.path = source_path.clone();
+        photo.file_size = Some(124);
+        photo.modified_at = Some(457);
+
+        let cache_path = viewer_cache_path(&photo).unwrap();
+        let _ = std::fs::remove_file(&cache_path);
+        let original = RgbaImage::from_pixel(80, 40, image::Rgba([10, 20, 30, 255]));
+        original
+            .save_with_format(&source_path, ImageFormat::Png)
+            .unwrap();
+
+        let loaded = load_viewer_image_for_display(&photo);
+
+        assert!(loaded.image.is_some());
+        assert!(loaded.cache_write.is_some());
+        assert!(!cache_path.exists());
+
+        save_viewer_cache_image(loaded.cache_write.unwrap());
+        assert!(cache_path.exists());
+
+        std::fs::remove_file(&source_path).unwrap();
+        let cached = load_viewer_image_for_display(&photo);
+        assert!(cached.image.is_some());
+        assert!(cached.cache_write.is_none());
 
         let _ = std::fs::remove_file(cache_path);
     }
