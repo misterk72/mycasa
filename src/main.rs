@@ -16,6 +16,8 @@ mod viewer;
 use app::MyCasaApp;
 
 fn main() -> eframe::Result {
+    register_extra_image_decoders();
+
     let mut args = std::env::args_os();
     let _program = args.next();
     if matches!(
@@ -45,4 +47,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(|creation_context| Ok(Box::new(MyCasaApp::new(creation_context)))),
     )
+}
+
+fn register_extra_image_decoders() {
+    libheif_rs::integration::image::register_all_decoding_hooks();
 }

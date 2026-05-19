@@ -10,6 +10,7 @@ directories = "6"
 eframe = { version = "0.33", features = ["wgpu"] }
 egui = "0.33"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+libheif-rs = { version = "2.7", default-features = false, features = ["v1_17", "image"] }
 rfd = "0.15"
 rusqlite = { version = "0.37", features = ["bundled"] }
 thiserror = "2"

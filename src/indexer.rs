@@ -141,7 +141,7 @@ fn is_supported_image(path: &Path) -> bool {
         .map(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff"
+                "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "heic" | "heif"
             )
         })
         .unwrap_or(false)
@@ -156,6 +156,8 @@ mod tests {
         assert!(is_supported_image(Path::new("photo.JPG")));
         assert!(is_supported_image(Path::new("scan.tiff")));
         assert!(is_supported_image(Path::new("web.webp")));
+        assert!(is_supported_image(Path::new("phone.HEIC")));
+        assert!(is_supported_image(Path::new("phone.heif")));
         assert!(!is_supported_image(Path::new("notes.txt")));
         assert!(!is_supported_image(Path::new("no-extension")));
     }
