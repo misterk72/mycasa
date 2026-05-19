@@ -45,6 +45,8 @@ Resultat sur un echantillon NAS 2026/04 :
 - Avec optimisation dev ciblee sur les crates image/JPEG/PNG, `target/debug/mycasa` descend a environ 491 ms par image pour le premier passage complet, dont environ 281 ms avant affichage possible.
 - Le cache PNG 1600 px se relit autour de 31 ms sur l'echantillon, donc les retours sur une photo deja mise en cache doivent etre nettement plus rapides que le premier decode original.
 - HEIC/HEIF est maintenant branche via `libheif-rs` et valide sur un echantillon reel Linux/NAS.
+- Mesure du 2026-05-19 sur 12 images NAS 2026/04 : `avg_display_ready_ms=296.3`, `avg_total_ms=554.5`, `avg_decode_ms=188.2`, `avg_resize_ms=105.6`, `avg_png_decode_ms=29.2`.
+- Le HEIC teste (`20260405_102402.heic`) affiche `display_ready_ms=443.3` et `png_decode_ms=24.2`, ce qui confirme que le premier decode HEIC reste cher mais que le cache 1600 px annule presque tout ce cout aux retours suivants.
 
 Decision technique provisoire :
 - Le rendu GPU `wgpu` accelere l'affichage et l'upload texture, mais pas la decompression JPEG/HEIC elle-meme.
