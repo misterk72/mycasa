@@ -109,19 +109,23 @@ impl IndexedPhoto {
     fn from_path(path: &Path) -> Result<Self, String> {
         let metadata =
             std::fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let normalized_path = normalize_photo_path(path);
         let (width, height) = match image::image_dimensions(path) {
             Ok((width, height)) => (Some(width), Some(height)),
             Err(_) => (None, None),
         };
 
         Ok(Self {
-            path: path.to_path_buf(),
-            file_name: path
+            path: normalized_path.clone(),
+            file_name: normalized_path
                 .file_name()
                 .and_then(|file_name| file_name.to_str())
                 .unwrap_or("photo")
                 .to_owned(),
-            parent_path: path.parent().unwrap_or_else(|| Path::new("")).to_path_buf(),
+            parent_path: normalized_path
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf(),
             file_size: Some(metadata.len()),
             modified_at: metadata
                 .modified()
@@ -133,6 +137,10 @@ impl IndexedPhoto {
             picasa: crate::picasa_ini::read_entry_for_photo(path),
         })
     }
+}
+
+fn normalize_photo_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn is_supported_image(path: &Path) -> bool {
@@ -165,5 +173,36 @@ mod tests {
     #[test]
     fn index_event_queue_is_bounded() {
         assert_eq!(INDEX_EVENT_QUEUE_CAPACITY, 512);
+    }
+
+    #[test]
+    fn indexed_photo_stores_canonical_path() {
+        let root = std::env::temp_dir().join(format!(
+            "mycasa-index-path-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let photo_path = root.join("nested").join("photo.png");
+        image::RgbaImage::from_pixel(4, 3, image::Rgba([20, 40, 60, 255]))
+            .save_with_format(&photo_path, image::ImageFormat::Png)
+            .unwrap();
+
+        let indexed = IndexedPhoto::from_path(
+            &root
+                .join("nested")
+                .join("..")
+                .join("nested")
+                .join("photo.png"),
+        )
+        .unwrap();
+
+        assert_eq!(indexed.path, photo_path.canonicalize().unwrap());
+        assert_eq!(
+            indexed.parent_path,
+            root.join("nested").canonicalize().unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

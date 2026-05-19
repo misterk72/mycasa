@@ -274,6 +274,78 @@ impl Catalog {
         self.ensure_column("photos", "picasa_keywords", "TEXT")?;
         self.ensure_column("photos", "picasa_starred", "INTEGER NOT NULL DEFAULT 0")?;
         self.ensure_column("photos", "picasa_filters", "TEXT")?;
+        self.deduplicate_photos_by_path()?;
+        self.connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_photos_path_unique ON photos(path)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn deduplicate_photos_by_path(&self) -> Result<(), CatalogError> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT path
+            FROM photos
+            GROUP BY path
+            HAVING COUNT(*) > 1
+            ",
+        )?;
+        let duplicate_paths = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for path in duplicate_paths {
+            let ids = self.photo_ids_for_path(&path)?;
+            let Some((&keeper_id, duplicate_ids)) = ids.split_first() else {
+                continue;
+            };
+
+            for duplicate_id in duplicate_ids {
+                self.merge_duplicate_photo(keeper_id, *duplicate_id)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn photo_ids_for_path(&self, path: &str) -> Result<Vec<i64>, CatalogError> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT id
+            FROM photos
+            WHERE path = ?1
+            ORDER BY id DESC
+            ",
+        )?;
+        let ids = statement
+            .query_map(params![path], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(ids)
+    }
+
+    fn merge_duplicate_photo(&self, keeper_id: i64, duplicate_id: i64) -> Result<(), CatalogError> {
+        self.connection.execute(
+            "
+            INSERT OR IGNORE INTO album_photos (album_id, photo_id)
+            SELECT album_id, ?1
+            FROM album_photos
+            WHERE photo_id = ?2
+            ",
+            params![keeper_id, duplicate_id],
+        )?;
+        self.connection.execute(
+            "DELETE FROM album_photos WHERE photo_id = ?1",
+            params![duplicate_id],
+        )?;
+        self.connection.execute(
+            "UPDATE photo_faces SET photo_id = ?1 WHERE photo_id = ?2",
+            params![keeper_id, duplicate_id],
+        )?;
+        self.connection
+            .execute("DELETE FROM photos WHERE id = ?1", params![duplicate_id])?;
 
         Ok(())
     }
@@ -456,7 +528,79 @@ mod tests {
         assert!(has_index(&catalog.connection, "idx_photos_imported_at"));
         assert!(has_index(&catalog.connection, "idx_photos_file_name"));
         assert!(has_index(&catalog.connection, "idx_photos_parent_path"));
+        assert!(has_index(&catalog.connection, "idx_photos_path_unique"));
         assert!(has_index(&catalog.connection, "idx_photo_faces_photo_id"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_deduplicates_existing_photos_by_path() {
+        let path = test_db_path("dedupe");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA foreign_keys = ON;
+                    CREATE TABLE photos (
+                        id INTEGER PRIMARY KEY,
+                        path TEXT NOT NULL,
+                        file_name TEXT NOT NULL,
+                        parent_path TEXT NOT NULL,
+                        file_size INTEGER,
+                        modified_at INTEGER,
+                        imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        width INTEGER,
+                        height INTEGER,
+                        captured_at TEXT
+                    );
+                    CREATE TABLE albums (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE TABLE album_photos (
+                        album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                        photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                        PRIMARY KEY (album_id, photo_id)
+                    );
+                    CREATE TABLE photo_faces (
+                        id INTEGER PRIMARY KEY,
+                        photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                        rect64 TEXT NOT NULL,
+                        contact_id TEXT NOT NULL,
+                        contact_name TEXT
+                    );
+                    INSERT INTO photos (id, path, file_name, parent_path, width)
+                    VALUES
+                        (1, '/photos/duplicate.jpg', 'duplicate.jpg', '/photos', 800),
+                        (2, '/photos/duplicate.jpg', 'duplicate.jpg', '/photos', 1024);
+                    INSERT INTO albums (id, name) VALUES (1, 'Album');
+                    INSERT INTO album_photos (album_id, photo_id) VALUES (1, 1);
+                    INSERT INTO photo_faces (photo_id, rect64, contact_id, contact_name)
+                    VALUES (1, 'face-old', '1', 'Old'), (2, 'face-new', '2', 'New');
+                    ",
+                )
+                .unwrap();
+        }
+
+        let catalog = Catalog::open(path.clone()).unwrap();
+        let photos = catalog.search_photos("duplicate", 10).unwrap();
+
+        assert_eq!(photos.len(), 1);
+        assert_eq!(photos[0].path, PathBuf::from("/photos/duplicate.jpg"));
+        assert_eq!(photos[0].id, 2);
+        assert_eq!(photos[0].picasa_face_count, 2);
+        assert!(has_index(&catalog.connection, "idx_photos_path_unique"));
+
+        catalog
+            .upsert_photo(&crate::indexer::IndexedPhoto::for_test(PathBuf::from(
+                "/photos/duplicate.jpg",
+            )))
+            .unwrap();
+        let photos_after_reimport = catalog.search_photos("duplicate", 10).unwrap();
+        assert_eq!(photos_after_reimport.len(), 1);
 
         let _ = std::fs::remove_file(path);
     }
