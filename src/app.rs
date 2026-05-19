@@ -696,25 +696,29 @@ impl MyCasaApp {
         });
         ui.separator();
         ui.horizontal(|ui| {
-            if ui.button("Importer").clicked() {
-                self.pick_folder_and_scan();
-            }
-            if ui.button("Diaporama").clicked() {
-                self.status = "Diaporama: a implementer".to_owned();
-            }
-            if ui.button("Dossiers").clicked() {
-                self.library_view_mode = LibraryViewMode::FolderTree;
-                self.status = "Vue dossiers".to_owned();
-            }
-            if ui.button("Chronologie").clicked() {
-                self.library_view_mode = LibraryViewMode::RetroChronological;
-                self.status = "Vue retrochronologique".to_owned();
-            }
-            if ui.button("CD cadeau").clicked() {
-                self.status = "CD cadeau: a implementer".to_owned();
-            }
-            if ui.button("Scanner dossier courant").clicked() {
-                self.scan_current_dir();
+            for label in picasa_top_toolbar_button_labels() {
+                let enabled = picasa_top_toolbar_button_enabled(label);
+                let response = ui.add_enabled(enabled, egui::Button::new(label));
+                if !enabled {
+                    response.on_hover_text("Fonctionnalite pas encore implementee");
+                    continue;
+                }
+
+                if response.clicked() {
+                    match label {
+                        "Importer" => self.pick_folder_and_scan(),
+                        "Dossiers" => {
+                            self.library_view_mode = LibraryViewMode::FolderTree;
+                            self.status = "Vue dossiers".to_owned();
+                        }
+                        "Chronologie" => {
+                            self.library_view_mode = LibraryViewMode::RetroChronological;
+                            self.status = "Vue retrochronologique".to_owned();
+                        }
+                        "Scanner dossier courant" => self.scan_current_dir(),
+                        _ => {}
+                    }
+                }
             }
         });
         ui.add_space(2.0);
@@ -726,15 +730,18 @@ impl MyCasaApp {
             ui.add_space(260.0);
             ui.label(RichText::new("Filtres").color(Color32::from_gray(95)));
             for label in picasa_filter_button_labels() {
-                if ui.small_button(label).clicked() {
-                    self.status = format!("Filtre {label}: a implementer");
-                }
+                ui.add_enabled(false, egui::Button::new(label).small())
+                    .on_hover_text("Filtre pas encore implemente");
             }
             let mut filter_strength = 0.0_f32;
-            let _ = ui.add_sized(
-                [96.0, 18.0],
-                egui::Slider::new(&mut filter_strength, 0.0..=1.0),
-            );
+            ui.add_enabled_ui(false, |ui| {
+                let _ = ui.add_sized(
+                    [96.0, 18.0],
+                    egui::Slider::new(&mut filter_strength, 0.0..=1.0),
+                );
+            })
+            .response
+            .on_hover_text("Intensite de filtre pas encore implementee");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let response = ui.add_sized(
                     [360.0, 22.0],
@@ -790,15 +797,14 @@ impl MyCasaApp {
     fn ui_collection_actions(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for action in picasa_collection_action_labels() {
-                if ui
-                    .add_sized(
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.add_sized(
                         [picasa_collection_action_width(action), 24.0],
                         egui::Button::new(action),
-                    )
-                    .clicked()
-                {
-                    self.status = format!("{action}: a implementer");
-                }
+                    );
+                })
+                .response
+                .on_hover_text("Action pas encore implementee");
             }
         });
     }
@@ -1089,7 +1095,10 @@ impl MyCasaApp {
             }
             ViewerNavigationRequest::Photo(photo_id) => {
                 self.viewer_wheel_navigation.reset();
-                self.open_viewer_photo(photo_id);
+                let direction = self.viewer.current_photo_id().and_then(|current_id| {
+                    viewer_direction_between_photos(&self.photos, current_id, photo_id)
+                });
+                self.open_viewer_photo_internal(photo_id, direction);
             }
         }
     }
@@ -1098,10 +1107,18 @@ impl MyCasaApp {
         let Some(next_id) = adjacent_photo_id(&self.photos, current_id, direction) else {
             return;
         };
-        self.open_viewer_photo(next_id);
+        self.open_viewer_photo_with_direction(next_id, direction);
     }
 
-    fn open_viewer_photo(&mut self, photo_id: i64) {
+    fn open_viewer_photo_with_direction(&mut self, photo_id: i64, direction: NavigationDirection) {
+        self.open_viewer_photo_internal(photo_id, Some(direction));
+    }
+
+    fn open_viewer_photo_internal(
+        &mut self,
+        photo_id: i64,
+        direction: Option<NavigationDirection>,
+    ) {
         let Some(photo) = self
             .photos
             .iter()
@@ -1112,7 +1129,11 @@ impl MyCasaApp {
         };
 
         self.selected_photo = Some(photo.id);
-        self.viewer.open(photo);
+        if let Some(direction) = direction {
+            self.viewer.open_with_direction(photo, direction);
+        } else {
+            self.viewer.open(photo);
+        }
     }
 
     fn preload_viewer_neighbors(&mut self, ctx: &egui::Context) {
@@ -1238,7 +1259,8 @@ impl MyCasaApp {
                     .color(Color32::from_gray(70)),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let _ = ui.small_button("⚙");
+                ui.add_enabled(false, egui::Button::new("⚙").small())
+                    .on_hover_text("Reglages personnes pas encore implementes");
             });
         });
         ui.separator();
@@ -1299,12 +1321,11 @@ impl MyCasaApp {
                 );
                 ui.add_space(24.0);
                 for label in picasa_bottom_action_labels() {
-                    if ui
-                        .add_sized([82.0, 24.0], egui::Button::new(label))
-                        .clicked()
-                    {
-                        self.status = format!("{label}: a implementer");
-                    }
+                    ui.add_enabled_ui(false, |ui| {
+                        let _ = ui.add_sized([82.0, 24.0], egui::Button::new(label));
+                    })
+                    .response
+                    .on_hover_text("Action pas encore implementee");
                 }
             });
             if let Ok(catalog) = &self.catalog {
@@ -1448,6 +1469,20 @@ fn viewer_wheel_navigation_direction(wheel_delta: f32) -> Option<NavigationDirec
         Some(NavigationDirection::Previous)
     } else {
         None
+    }
+}
+
+fn viewer_direction_between_photos(
+    photos: &[Photo],
+    current_id: i64,
+    target_id: i64,
+) -> Option<NavigationDirection> {
+    let current_index = photos.iter().position(|photo| photo.id == current_id)?;
+    let target_index = photos.iter().position(|photo| photo.id == target_id)?;
+    match target_index.cmp(&current_index) {
+        std::cmp::Ordering::Less => Some(NavigationDirection::Previous),
+        std::cmp::Ordering::Greater => Some(NavigationDirection::Next),
+        std::cmp::Ordering::Equal => None,
     }
 }
 
@@ -1739,6 +1774,24 @@ fn picasa_filter_button_labels() -> [&'static str; 5] {
     ["★", "↑", "👤", "▦", "⌖"]
 }
 
+fn picasa_top_toolbar_button_labels() -> [&'static str; 6] {
+    [
+        "Importer",
+        "Diaporama",
+        "Dossiers",
+        "Chronologie",
+        "CD cadeau",
+        "Scanner dossier courant",
+    ]
+}
+
+fn picasa_top_toolbar_button_enabled(label: &str) -> bool {
+    matches!(
+        label,
+        "Importer" | "Dossiers" | "Chronologie" | "Scanner dossier courant"
+    )
+}
+
 fn picasa_collection_action_labels() -> [&'static str; 6] {
     ["Lecture", "Photo", "Film", "Favori", "Partager", "Menu"]
 }
@@ -2019,6 +2072,22 @@ mod tests {
             Some(NavigationDirection::Previous)
         );
         assert_eq!(viewer_wheel_navigation_direction(-4.0), None);
+    }
+
+    #[test]
+    fn viewer_direction_between_photos_tracks_target_position() {
+        let photos: Vec<Photo> = (10..=12).map(photo_for_test).collect();
+
+        assert_eq!(
+            viewer_direction_between_photos(&photos, 11, 12),
+            Some(NavigationDirection::Next)
+        );
+        assert_eq!(
+            viewer_direction_between_photos(&photos, 11, 10),
+            Some(NavigationDirection::Previous)
+        );
+        assert_eq!(viewer_direction_between_photos(&photos, 11, 11), None);
+        assert_eq!(viewer_direction_between_photos(&photos, 11, 99), None);
     }
 
     #[test]
@@ -2417,6 +2486,27 @@ mod tests {
     #[test]
     fn picasa_filter_strip_uses_reference_style_button_count() {
         assert_eq!(picasa_filter_button_labels().len(), 5);
+    }
+
+    #[test]
+    fn top_toolbar_marks_only_real_actions_enabled() {
+        let labels = picasa_top_toolbar_button_labels();
+
+        assert_eq!(
+            labels
+                .iter()
+                .copied()
+                .filter(|label| picasa_top_toolbar_button_enabled(label))
+                .collect::<Vec<_>>(),
+            [
+                "Importer",
+                "Dossiers",
+                "Chronologie",
+                "Scanner dossier courant"
+            ]
+        );
+        assert!(!picasa_top_toolbar_button_enabled("Diaporama"));
+        assert!(!picasa_top_toolbar_button_enabled("CD cadeau"));
     }
 
     #[test]

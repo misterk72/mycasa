@@ -45,6 +45,7 @@ const VIEWER_FILMSTRIP_THUMB_GAP: f32 = 8.0;
 const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 9;
 const VIEWER_MAX_PENDING_FULL_LOADS: usize = 4;
 const VIEWER_DISK_CACHE_DIR: &str = "viewer";
+const VIEWER_SLIDE_TRANSITION_SECONDS: f32 = 0.18;
 #[cfg(test)]
 const VIEWER_PANEL_GAP: f32 = 8.0;
 
@@ -75,6 +76,14 @@ pub struct ViewerState {
     metrics: ViewerMetrics,
     loading: bool,
     navigation_request: Option<ViewerNavigationRequest>,
+    transition: Option<ViewerTransition>,
+}
+
+struct ViewerTransition {
+    direction: NavigationDirection,
+    elapsed: f32,
+    previous_texture: TextureHandle,
+    previous_zoom: f32,
 }
 
 enum ViewerMessage {
@@ -147,6 +156,7 @@ impl Default for ViewerState {
             metrics: ViewerMetrics::default(),
             loading: false,
             navigation_request: None,
+            transition: None,
         }
     }
 }
@@ -186,9 +196,24 @@ impl ViewerState {
         self.preview_texture = None;
         self.full_texture = None;
         self.loading = false;
+        self.transition = None;
     }
 
     pub fn open(&mut self, photo: Photo) {
+        self.open_with_transition(photo, None);
+    }
+
+    pub fn open_with_direction(&mut self, photo: Photo, direction: NavigationDirection) {
+        self.open_with_transition(photo, Some(direction));
+    }
+
+    fn open_with_transition(&mut self, photo: Photo, direction: Option<NavigationDirection>) {
+        let previous_texture = direction.and_then(|direction| {
+            self.visible_texture()
+                .cloned()
+                .map(|texture| (direction, texture))
+        });
+        let previous_zoom = self.zoom;
         self.failed_full_loads.remove(&photo.id);
         self.current = Some(photo);
         self.zoom = 1.0;
@@ -196,6 +221,12 @@ impl ViewerState {
         self.preview_texture = None;
         self.full_texture = None;
         self.loading = false;
+        self.transition = previous_texture.map(|(direction, previous_texture)| ViewerTransition {
+            direction,
+            elapsed: 0.0,
+            previous_texture,
+            previous_zoom,
+        });
     }
 
     pub fn preload_photos(&mut self, ctx: &egui::Context, photos: &[Photo]) {
@@ -308,15 +339,14 @@ impl ViewerState {
                 {
                     self.close();
                 }
-                if ui
-                    .add_sized(
+                ui.add_enabled_ui(viewer_filmstrip_action_enabled("▶ Diaporama"), |ui| {
+                    let _ = ui.add_sized(
                         Vec2::new(92.0, VIEWER_NAV_BUTTON_HEIGHT),
-                        viewer_button("▶ Diaporama"),
-                    )
-                    .clicked()
-                {
-                    self.zoom = 1.0;
-                }
+                        viewer_disabled_button("▶ Diaporama"),
+                    );
+                })
+                .response
+                .on_hover_text("Diaporama pas encore implemente");
             });
         });
         ui.scope_builder(
@@ -432,8 +462,13 @@ impl ViewerState {
                 ui.horizontal(|ui| {
                     let _ =
                         ui.selectable_label(true, RichText::new("Ret. simples").color(VIEWER_BLUE));
-                    let _ = ui.selectable_label(false, "Reglages");
-                    let _ = ui.selectable_label(false, "Effets");
+                    for tab in ["Reglages", "Effets"] {
+                        ui.add_enabled_ui(viewer_tool_tab_enabled(tab), |ui| {
+                            let _ = ui.selectable_label(false, tab);
+                        })
+                        .response
+                        .on_hover_text("Onglet pas encore implemente");
+                    }
                 });
                 ui.separator();
                 ui.label(RichText::new("Retouches courantes").strong());
@@ -452,12 +487,14 @@ impl ViewerState {
                     .spacing(Vec2::new(5.0, 5.0))
                     .show(ui, |ui| {
                         for (index, tool) in tools.iter().enumerate() {
-                            if ui
-                                .add_sized(viewer_tool_button_size(), viewer_button(*tool))
-                                .clicked()
-                            {
-                                self.zoom = 1.0;
-                            }
+                            ui.add_enabled_ui(viewer_basic_tool_enabled(tool), |ui| {
+                                let _ = ui.add_sized(
+                                    viewer_tool_button_size(),
+                                    viewer_disabled_button(*tool),
+                                );
+                            })
+                            .response
+                            .on_hover_text("Retouche pas encore implementee");
                             if index % 2 == 1 {
                                 ui.end_row();
                             }
@@ -724,24 +761,51 @@ impl ViewerState {
         ui.allocate_rect(rect, egui::Sense::drag());
         ui.painter().rect_filled(rect, 0.0, VIEWER_CANVAS_BG);
 
+        let transition = self.active_transition(ui);
+
+        if let Some((direction, progress, previous_texture, previous_zoom)) = transition {
+            let distance = rect.width().max(1.0);
+            let (previous_offset, current_offset) =
+                viewer_transition_offsets(direction, progress, distance);
+            paint_viewer_texture(ui, rect, &previous_texture, previous_zoom, previous_offset);
+            if let Some(texture) = self.visible_texture() {
+                paint_viewer_texture(ui, rect, texture, self.zoom, current_offset);
+            }
+        } else {
+            self.show_static_image_or_placeholder(ui, rect);
+        }
+
+        self.show_canvas_navigation_arrows(ui, rect);
+    }
+
+    fn active_transition(
+        &mut self,
+        ui: &egui::Ui,
+    ) -> Option<(NavigationDirection, f32, TextureHandle, f32)> {
+        let Some(transition) = &mut self.transition else {
+            return None;
+        };
+
+        let dt = ui.input(|input| input.stable_dt.clamp(1.0 / 240.0, 0.05));
+        transition.elapsed += dt;
+        ui.ctx().request_repaint();
+
+        let progress = viewer_transition_progress(transition.elapsed);
+        let output = Some((
+            transition.direction,
+            progress,
+            transition.previous_texture.clone(),
+            transition.previous_zoom,
+        ));
+        if progress >= 1.0 {
+            self.transition = None;
+        }
+        output
+    }
+
+    fn show_static_image_or_placeholder(&self, ui: &egui::Ui, rect: egui::Rect) {
         if let Some(texture) = self.visible_texture() {
-            let image_size = texture.size_vec2();
-            let image_rect = viewer_image_rect(rect, image_size, self.zoom);
-            let matte_rect = image_rect.expand(VIEWER_MATTE_PADDING);
-            ui.painter()
-                .rect_filled(matte_rect, 0.0, Color32::from_rgb(224, 224, 220));
-            ui.painter().rect_stroke(
-                matte_rect,
-                0.0,
-                egui::Stroke::new(1.0, Color32::from_rgb(118, 118, 118)),
-                egui::StrokeKind::Inside,
-            );
-            ui.painter().image(
-                texture.id(),
-                image_rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            paint_viewer_texture(ui, rect, texture, self.zoom, 0.0);
         } else {
             let label = if self.loading {
                 "Chargement de l'image"
@@ -756,8 +820,6 @@ impl ViewerState {
                 Color32::LIGHT_GRAY,
             );
         }
-
-        self.show_canvas_navigation_arrows(ui, rect);
     }
 
     fn show_canvas_navigation_arrows(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
@@ -825,6 +887,51 @@ pub fn viewer_image_rect(canvas_rect: egui::Rect, image_size: Vec2, zoom: f32) -
     egui::Rect::from_center_size(canvas_rect.center(), fitted_size)
 }
 
+fn paint_viewer_texture(
+    ui: &egui::Ui,
+    canvas_rect: egui::Rect,
+    texture: &TextureHandle,
+    zoom: f32,
+    offset_x: f32,
+) {
+    let image_size = texture.size_vec2();
+    let image_rect =
+        viewer_image_rect(canvas_rect, image_size, zoom).translate(Vec2::new(offset_x, 0.0));
+    let matte_rect = image_rect.expand(VIEWER_MATTE_PADDING);
+    ui.painter()
+        .rect_filled(matte_rect, 0.0, Color32::from_rgb(224, 224, 220));
+    ui.painter().rect_stroke(
+        matte_rect,
+        0.0,
+        egui::Stroke::new(1.0, Color32::from_rgb(118, 118, 118)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().image(
+        texture.id(),
+        image_rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+}
+
+pub fn viewer_transition_progress(elapsed_seconds: f32) -> f32 {
+    let linear = (elapsed_seconds / VIEWER_SLIDE_TRANSITION_SECONDS).clamp(0.0, 1.0);
+    1.0 - (1.0 - linear).powi(3)
+}
+
+pub fn viewer_transition_offsets(
+    direction: NavigationDirection,
+    progress: f32,
+    distance: f32,
+) -> (f32, f32) {
+    let distance = distance.max(0.0);
+    let progress = progress.clamp(0.0, 1.0);
+    match direction {
+        NavigationDirection::Previous => (progress * distance, -(1.0 - progress) * distance),
+        NavigationDirection::Next => (-progress * distance, (1.0 - progress) * distance),
+    }
+}
+
 pub fn viewer_fit_rect(container: egui::Rect, content_size: Vec2) -> egui::Rect {
     if content_size.x <= 0.0 || content_size.y <= 0.0 {
         return egui::Rect::from_center_size(container.center(), Vec2::ZERO);
@@ -847,6 +954,25 @@ fn viewer_button(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).color(Color32::from_rgb(43, 48, 52)))
         .fill(VIEWER_BUTTON_BG)
         .stroke(Stroke::new(1.0, VIEWER_BUTTON_STROKE))
+        .corner_radius(2.0)
+}
+
+fn viewer_filmstrip_action_enabled(label: &str) -> bool {
+    matches!(label, "← Phototheque" | "◀" | "▶")
+}
+
+fn viewer_tool_tab_enabled(label: &str) -> bool {
+    label == "Ret. simples"
+}
+
+fn viewer_basic_tool_enabled(_label: &str) -> bool {
+    false
+}
+
+fn viewer_disabled_button(label: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(label).color(Color32::from_gray(135)))
+        .fill(Color32::from_rgb(228, 231, 235))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(196, 201, 207)))
         .corner_radius(2.0)
 }
 
@@ -1084,6 +1210,19 @@ mod tests {
     }
 
     #[test]
+    fn viewer_marks_unimplemented_controls_disabled() {
+        assert!(viewer_filmstrip_action_enabled("← Phototheque"));
+        assert!(viewer_filmstrip_action_enabled("◀"));
+        assert!(viewer_filmstrip_action_enabled("▶"));
+        assert!(!viewer_filmstrip_action_enabled("▶ Diaporama"));
+        assert!(viewer_tool_tab_enabled("Ret. simples"));
+        assert!(!viewer_tool_tab_enabled("Reglages"));
+        assert!(!viewer_tool_tab_enabled("Effets"));
+        assert!(!viewer_basic_tool_enabled("Recadrer"));
+        assert!(!viewer_basic_tool_enabled("Texte"));
+    }
+
+    #[test]
     fn close_clears_current_photo() {
         let mut viewer = ViewerState::default();
         viewer.open(photo_for_test(42));
@@ -1318,6 +1457,71 @@ mod tests {
         viewer.full_texture = Some(full);
 
         assert_eq!(viewer.visible_texture().unwrap().name(), "full");
+    }
+
+    #[test]
+    fn viewer_open_with_direction_keeps_previous_texture_for_transition() {
+        let ctx = egui::Context::default();
+        let previous = ctx.load_texture(
+            "previous-full",
+            color_image_for_test(200),
+            TextureOptions::LINEAR,
+        );
+        let mut viewer = ViewerState::default();
+        viewer.open(photo_for_test(1));
+        viewer.full_texture = Some(previous);
+        viewer.zoom = 1.4;
+
+        viewer.open_with_direction(photo_for_test(2), NavigationDirection::Next);
+
+        let transition = viewer.transition.as_ref().expect("transition should start");
+        assert_eq!(transition.direction, NavigationDirection::Next);
+        assert_eq!(transition.previous_zoom, 1.4);
+        assert_eq!(transition.previous_texture.name(), "previous-full");
+    }
+
+    #[test]
+    fn viewer_open_without_direction_does_not_start_transition() {
+        let ctx = egui::Context::default();
+        let previous = ctx.load_texture(
+            "previous-full",
+            color_image_for_test(200),
+            TextureOptions::LINEAR,
+        );
+        let mut viewer = ViewerState::default();
+        viewer.open(photo_for_test(1));
+        viewer.full_texture = Some(previous);
+
+        viewer.open(photo_for_test(2));
+
+        assert!(viewer.transition.is_none());
+    }
+
+    #[test]
+    fn viewer_transition_progress_clamps_and_eases() {
+        assert_eq!(viewer_transition_progress(-1.0), 0.0);
+        assert_eq!(viewer_transition_progress(0.0), 0.0);
+        assert!(viewer_transition_progress(VIEWER_SLIDE_TRANSITION_SECONDS / 2.0) > 0.5);
+        assert_eq!(
+            viewer_transition_progress(VIEWER_SLIDE_TRANSITION_SECONDS * 2.0),
+            1.0
+        );
+    }
+
+    #[test]
+    fn viewer_transition_offsets_follow_navigation_direction() {
+        assert_eq!(
+            viewer_transition_offsets(NavigationDirection::Next, 0.25, 400.0),
+            (-100.0, 300.0)
+        );
+        assert_eq!(
+            viewer_transition_offsets(NavigationDirection::Previous, 0.25, 400.0),
+            (100.0, -300.0)
+        );
+        assert_eq!(
+            viewer_transition_offsets(NavigationDirection::Next, 2.0, 400.0),
+            (-400.0, 0.0)
+        );
     }
 
     #[test]
