@@ -35,3 +35,7 @@ Exceptions autorisees :
 8. Catalogue exploitable : ajouter filtres favoris/visages/mots-cles et recherche par metadata Picasa.
 
 Chaque item doit etre implemente par petits increments TDD avec un test rouge avant le code de production.
+
+## Etat Fonctionnel
+- Le filtre Favoris Picasa (`★`) est actif dans la barre de filtres : il recharge la grille, la pagination continue et la chronologie depuis SQLite avec `picasa_starred = 1`.
+- Les autres filtres Picasa visibles restent volontairement grises tant que leurs comportements ne sont pas implementes.

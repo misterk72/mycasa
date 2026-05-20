@@ -56,6 +56,11 @@ enum LibraryViewMode {
     RetroChronological,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PicasaFilterState {
+    starred_only: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChronologicalGridRow {
     Section {
@@ -122,6 +127,7 @@ pub struct MyCasaApp {
     imported_since_refresh: usize,
     pending_catalog_writes: Vec<IndexedPhoto>,
     active_scan_folders: HashSet<PathBuf>,
+    photo_filters: PicasaFilterState,
     frame_count: u64,
     fps_window_started_at: Instant,
     displayed_fps: f32,
@@ -185,6 +191,7 @@ impl MyCasaApp {
             imported_since_refresh: 0,
             pending_catalog_writes: Vec::new(),
             active_scan_folders: HashSet::new(),
+            photo_filters: PicasaFilterState::default(),
             frame_count: 0,
             fps_window_started_at: Instant::now(),
             displayed_fps: 0.0,
@@ -247,7 +254,12 @@ impl MyCasaApp {
         self.photo_limit = next_limit;
 
         if let Ok(catalog) = &self.catalog {
-            match catalog.search_photos_page(&self.search, page_size, page_offset) {
+            match catalog.search_photos_page_filtered(
+                &self.search,
+                self.photo_filters.starred_only,
+                page_size,
+                page_offset,
+            ) {
                 Ok(mut photos) => {
                     self.all_photos_loaded = photos.len() < page_size;
                     self.photos.append(&mut photos);
@@ -300,7 +312,12 @@ impl MyCasaApp {
         };
 
         if let Ok(catalog) = &self.catalog {
-            match catalog.search_photos_page(&self.search, page_size, page_offset) {
+            match catalog.search_photos_page_filtered(
+                &self.search,
+                self.photo_filters.starred_only,
+                page_size,
+                page_offset,
+            ) {
                 Ok(mut photos) => {
                     if photos.is_empty() {
                         self.photo_window_start = 0;
@@ -349,8 +366,14 @@ impl MyCasaApp {
 
     fn refresh_photos(&mut self) {
         if let Ok(catalog) = &self.catalog {
-            let photos_result = catalog.search_photos(&self.search, self.photo_limit);
-            let chronology_result = catalog.chronology_months(&self.search);
+            let photos_result = catalog.search_photos_page_filtered(
+                &self.search,
+                self.photo_filters.starred_only,
+                self.photo_limit,
+                0,
+            );
+            let chronology_result =
+                catalog.chronology_months_filtered(&self.search, self.photo_filters.starred_only);
             match photos_result {
                 Ok(photos) => {
                     self.all_photos_loaded = photos.len() < self.photo_limit;
@@ -380,12 +403,20 @@ impl MyCasaApp {
 
     fn load_photo_window_at_month(&mut self, key: ChronologySectionKey) {
         if let Ok(catalog) = &self.catalog {
-            let Ok(Some(offset)) =
+            let offset_result = if self.photo_filters.starred_only {
+                catalog.photo_offset_for_month_filtered(&self.search, true, key.year, key.month)
+            } else {
                 catalog.photo_offset_for_month(&self.search, key.year, key.month)
-            else {
+            };
+            let Ok(Some(offset)) = offset_result else {
                 return;
             };
-            match catalog.search_photos_page(&self.search, INITIAL_PHOTO_LIMIT, offset) {
+            match catalog.search_photos_page_filtered(
+                &self.search,
+                self.photo_filters.starred_only,
+                INITIAL_PHOTO_LIMIT,
+                offset,
+            ) {
                 Ok(photos) => {
                     self.all_photos_loaded = photos.len() < INITIAL_PHOTO_LIMIT;
                     self.photo_window_start = offset;
@@ -730,8 +761,21 @@ impl MyCasaApp {
             ui.add_space(260.0);
             ui.label(RichText::new("Filtres").color(Color32::from_gray(95)));
             for label in picasa_filter_button_labels() {
-                ui.add_enabled(false, egui::Button::new(label).small())
-                    .on_hover_text("Filtre pas encore implemente");
+                if picasa_filter_button_enabled(label) {
+                    if ui
+                        .selectable_label(self.photo_filters.starred_only, label)
+                        .on_hover_text("Afficher uniquement les favoris Picasa")
+                        .clicked()
+                    {
+                        self.photo_filters.starred_only = !self.photo_filters.starred_only;
+                        self.reset_photo_window();
+                        self.refresh_photos();
+                        self.status = picasa_filter_status_text(self.photo_filters).to_owned();
+                    }
+                } else {
+                    ui.add_enabled(false, egui::Button::new(label).small())
+                        .on_hover_text("Filtre pas encore implemente");
+                }
             }
             let mut filter_strength = 0.0_f32;
             ui.add_enabled_ui(false, |ui| {
@@ -1774,6 +1818,18 @@ fn picasa_filter_button_labels() -> [&'static str; 5] {
     ["★", "↑", "👤", "▦", "⌖"]
 }
 
+fn picasa_filter_button_enabled(label: &str) -> bool {
+    label == "★"
+}
+
+fn picasa_filter_status_text(filters: PicasaFilterState) -> &'static str {
+    if filters.starred_only {
+        "Filtre favoris active"
+    } else {
+        "Filtre favoris desactive"
+    }
+}
+
 fn picasa_top_toolbar_button_labels() -> [&'static str; 6] {
     [
         "Importer",
@@ -2486,6 +2542,27 @@ mod tests {
     #[test]
     fn picasa_filter_strip_uses_reference_style_button_count() {
         assert_eq!(picasa_filter_button_labels().len(), 5);
+    }
+
+    #[test]
+    fn only_star_filter_is_enabled_for_now() {
+        assert!(picasa_filter_button_enabled("★"));
+        assert!(!picasa_filter_button_enabled("↑"));
+        assert!(!picasa_filter_button_enabled("👤"));
+    }
+
+    #[test]
+    fn favorite_filter_status_reflects_toggle_state() {
+        assert_eq!(
+            picasa_filter_status_text(PicasaFilterState { starred_only: true }),
+            "Filtre favoris active"
+        );
+        assert_eq!(
+            picasa_filter_status_text(PicasaFilterState {
+                starred_only: false
+            }),
+            "Filtre favoris desactive"
+        );
     }
 
     #[test]

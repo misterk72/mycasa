@@ -70,35 +70,35 @@ impl Catalog {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Photo>, CatalogError> {
+        self.search_photos_page_filtered(search, false, limit, offset)
+    }
+
+    pub fn search_photos_page_filtered(
+        &self,
+        search: &str,
+        starred_only: bool,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Photo>, CatalogError> {
         let pattern = format!("%{}%", search.trim());
-        let mut statement = if search.trim().is_empty() {
-            self.connection.prepare(
-                "SELECT id, path, file_size, modified_at, width, height, captured_at,
+        let has_search = !search.trim().is_empty();
+        let sql = format!(
+            "SELECT id, path, file_size, modified_at, width, height, captured_at,
                         picasa_caption, picasa_keywords, picasa_starred,
                         (SELECT COUNT(*) FROM photo_faces WHERE photo_faces.photo_id = photos.id)
                  FROM photos
+                 {}
                  ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
                           id DESC
                  LIMIT ?1 OFFSET ?2",
-            )?
-        } else {
-            self.connection.prepare(
-                "SELECT id, path, file_size, modified_at, width, height, captured_at,
-                        picasa_caption, picasa_keywords, picasa_starred,
-                        (SELECT COUNT(*) FROM photo_faces WHERE photo_faces.photo_id = photos.id)
-                 FROM photos
-                 WHERE file_name LIKE ?2 OR parent_path LIKE ?2 OR path LIKE ?2
-                    OR picasa_caption LIKE ?2 OR picasa_keywords LIKE ?2
-                 ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
-                          id DESC
-                 LIMIT ?1 OFFSET ?3",
-            )?
-        };
+            photo_search_where_clause(has_search, starred_only, "?3")
+        );
+        let mut statement = self.connection.prepare(&sql)?;
 
-        let params: &[&dyn rusqlite::ToSql] = if search.trim().is_empty() {
-            &[&(limit as i64), &(offset as i64)]
+        let params: &[&dyn rusqlite::ToSql] = if has_search {
+            &[&(limit as i64), &(offset as i64), &pattern]
         } else {
-            &[&(limit as i64), &pattern, &(offset as i64)]
+            &[&(limit as i64), &(offset as i64)]
         };
 
         let photos = statement
@@ -131,7 +131,15 @@ impl Catalog {
     }
 
     pub fn chronology_months(&self, search: &str) -> Result<Vec<(i32, u32)>, CatalogError> {
-        let mut months = self.search_photo_time_keys(search)?;
+        self.chronology_months_filtered(search, false)
+    }
+
+    pub fn chronology_months_filtered(
+        &self,
+        search: &str,
+        starred_only: bool,
+    ) -> Result<Vec<(i32, u32)>, CatalogError> {
+        let mut months = self.search_photo_time_keys(search, starred_only)?;
         months.sort_unstable_by(|left, right| right.cmp(left));
         months.dedup();
         Ok(months)
@@ -143,37 +151,40 @@ impl Catalog {
         year: i32,
         month: u32,
     ) -> Result<Option<usize>, CatalogError> {
+        self.photo_offset_for_month_filtered(search, false, year, month)
+    }
+
+    pub fn photo_offset_for_month_filtered(
+        &self,
+        search: &str,
+        starred_only: bool,
+        year: i32,
+        month: u32,
+    ) -> Result<Option<usize>, CatalogError> {
         Ok(self
-            .search_photo_time_keys(search)?
+            .search_photo_time_keys(search, starred_only)?
             .into_iter()
             .position(|(photo_year, photo_month)| photo_year == year && photo_month == month))
     }
 
-    fn search_photo_time_keys(&self, search: &str) -> Result<Vec<(i32, u32)>, CatalogError> {
+    fn search_photo_time_keys(
+        &self,
+        search: &str,
+        starred_only: bool,
+    ) -> Result<Vec<(i32, u32)>, CatalogError> {
         let pattern = format!("%{}%", search.trim());
-        let mut statement = if search.trim().is_empty() {
-            self.connection.prepare(
-                "SELECT captured_at, modified_at
+        let has_search = !search.trim().is_empty();
+        let sql = format!(
+            "SELECT captured_at, modified_at
                  FROM photos
+                 {}
                  ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
                           id DESC",
-            )?
-        } else {
-            self.connection.prepare(
-                "SELECT captured_at, modified_at
-                 FROM photos
-                 WHERE file_name LIKE ?1 OR parent_path LIKE ?1 OR path LIKE ?1
-                    OR picasa_caption LIKE ?1 OR picasa_keywords LIKE ?1
-                 ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
-                          id DESC",
-            )?
-        };
+            photo_search_where_clause(has_search, starred_only, "?1")
+        );
+        let mut statement = self.connection.prepare(&sql)?;
 
-        let params: &[&dyn rusqlite::ToSql] = if search.trim().is_empty() {
-            &[]
-        } else {
-            &[&pattern]
-        };
+        let params: &[&dyn rusqlite::ToSql] = if has_search { &[&pattern] } else { &[] };
 
         let keys = statement
             .query_map(params, |row| {
@@ -407,6 +418,25 @@ fn parse_photo_timestamp(value: &str) -> Option<i64> {
                 .and_then(|date| date.and_hms_opt(0, 0, 0))
                 .map(|datetime| datetime.and_utc().timestamp())
         })
+}
+
+fn photo_search_where_clause(
+    has_search: bool,
+    starred_only: bool,
+    search_placeholder: &str,
+) -> String {
+    let search_clause = format!(
+        "(file_name LIKE {0} OR parent_path LIKE {0} OR path LIKE {0}
+          OR picasa_caption LIKE {0} OR picasa_keywords LIKE {0})",
+        search_placeholder
+    );
+
+    match (has_search, starred_only) {
+        (false, false) => String::new(),
+        (false, true) => "WHERE picasa_starred = 1".to_owned(),
+        (true, false) => format!("WHERE {search_clause}"),
+        (true, true) => format!("WHERE picasa_starred = 1 AND {search_clause}"),
+    }
 }
 
 fn upsert_photo_on_connection(
@@ -663,6 +693,85 @@ mod tests {
         assert_eq!(first_page[0].path, PathBuf::from("/photos/3.jpg"));
         assert_eq!(first_page[1].path, PathBuf::from("/photos/2.jpg"));
         assert_eq!(second_page[0].path, PathBuf::from("/photos/1.jpg"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn search_starred_photos_filters_catalog_before_paging() {
+        let path = test_db_path("starred-search");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        for (index, starred) in [(1, false), (2, true), (3, true)] {
+            let mut photo = crate::indexer::IndexedPhoto::for_test(PathBuf::from(format!(
+                "/photos/{index}.jpg"
+            )));
+            photo.modified_at = Some(1_700_000_000 + index);
+            photo.picasa = Some(PicasaIniEntry {
+                caption: Some("family".to_owned()),
+                keywords: None,
+                starred,
+                filters: None,
+                faces: Vec::new(),
+            });
+            catalog.upsert_photo(&photo).unwrap();
+        }
+
+        let first_page = catalog
+            .search_photos_page_filtered("family", true, 1, 0)
+            .unwrap();
+        let second_page = catalog
+            .search_photos_page_filtered("family", true, 1, 1)
+            .unwrap();
+
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(second_page.len(), 1);
+        assert!(first_page[0].picasa_starred);
+        assert!(second_page[0].picasa_starred);
+        assert_eq!(first_page[0].path, PathBuf::from("/photos/3.jpg"));
+        assert_eq!(second_page[0].path, PathBuf::from("/photos/2.jpg"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn chronology_months_can_be_filtered_to_starred_photos() {
+        let path = test_db_path("starred-months");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        for (index, captured_at, starred) in [
+            (1, "2026-04-03T10:00:00Z", true),
+            (2, "2026-03-01T10:00:00Z", false),
+            (3, "2025-12-24T10:00:00Z", true),
+        ] {
+            let mut photo = crate::indexer::IndexedPhoto::for_test(PathBuf::from(format!(
+                "/photos/{index}.jpg"
+            )));
+            photo.picasa = Some(PicasaIniEntry {
+                caption: None,
+                keywords: None,
+                starred,
+                filters: None,
+                faces: Vec::new(),
+            });
+            catalog.upsert_photo(&photo).unwrap();
+            catalog
+                .connection
+                .execute(
+                    "UPDATE photos SET captured_at = ?1 WHERE path = ?2",
+                    params![captured_at, format!("/photos/{index}.jpg")],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            catalog.chronology_months_filtered("", true).unwrap(),
+            vec![(2026, 4), (2025, 12)]
+        );
+        assert_eq!(
+            catalog
+                .photo_offset_for_month_filtered("", true, 2025, 12)
+                .unwrap(),
+            Some(1)
+        );
 
         let _ = std::fs::remove_file(path);
     }
