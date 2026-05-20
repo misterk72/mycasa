@@ -62,6 +62,14 @@ enum LibraryViewMode {
     RetroChronological,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridNavigationDirection {
+    Previous,
+    Next,
+    Up,
+    Down,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ThumbnailSizeMode {
     Small,
@@ -133,6 +141,7 @@ pub struct MyCasaApp {
     pending_chronology_scroll: Option<ChronologySectionKey>,
     sidebar_auto_scroll_target: Option<ChronologySectionKey>,
     thumbnail_size_mode: ThumbnailSizeMode,
+    grid_columns: usize,
     main_scroll: InertialScrollState,
     viewer_wheel_navigation: ViewerWheelNavigationState,
     status: String,
@@ -198,6 +207,7 @@ impl MyCasaApp {
             pending_chronology_scroll: None,
             sidebar_auto_scroll_target: None,
             thumbnail_size_mode: ThumbnailSizeMode::Normal,
+            grid_columns: 1,
             main_scroll: InertialScrollState::default(),
             viewer_wheel_navigation: ViewerWheelNavigationState::default(),
             status,
@@ -952,6 +962,7 @@ impl MyCasaApp {
         let grid_width = library_grid_width(ui.max_rect());
         let tile_width = tile_width(self.thumbnail_size_mode);
         let columns = columns_for_width(grid_width, tile_width);
+        self.grid_columns = columns;
         let row_left_padding = centered_grid_left_padding(grid_width, columns, tile_width);
         let total_rows = row_count(self.photos.len(), columns);
         let row_height = photo_row_height(self.thumbnail_size_mode);
@@ -986,6 +997,7 @@ impl MyCasaApp {
         let grid_width = library_grid_width(ui.max_rect());
         let tile_width = tile_width(self.thumbnail_size_mode);
         let columns = columns_for_width(grid_width, tile_width);
+        self.grid_columns = columns;
         let row_left_padding = centered_grid_left_padding(grid_width, columns, tile_width);
         let rows = retrochronological_grid_rows(&self.photos, columns);
         let row_layout = chronological_row_layout(&rows, self.thumbnail_size_mode);
@@ -1192,6 +1204,40 @@ impl MyCasaApp {
         self.navigate_viewer(current_id, direction);
     }
 
+    fn handle_library_keyboard(&mut self, ctx: &egui::Context) {
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+
+        let direction = ctx.input(|input| {
+            if input.key_pressed(egui::Key::ArrowLeft) {
+                Some(GridNavigationDirection::Previous)
+            } else if input.key_pressed(egui::Key::ArrowRight) {
+                Some(GridNavigationDirection::Next)
+            } else if input.key_pressed(egui::Key::ArrowUp) {
+                Some(GridNavigationDirection::Up)
+            } else if input.key_pressed(egui::Key::ArrowDown) {
+                Some(GridNavigationDirection::Down)
+            } else {
+                None
+            }
+        });
+        let Some(direction) = direction else {
+            return;
+        };
+
+        let photo_ids =
+            grid_navigation_photo_ids(&self.photos, self.library_view_mode, self.grid_columns);
+        if let Some(photo_id) = selected_photo_after_grid_navigation(
+            &photo_ids,
+            self.selected_photo,
+            self.grid_columns,
+            direction,
+        ) {
+            self.selected_photo = Some(photo_id);
+        }
+    }
+
     fn handle_viewer_navigation_request(&mut self, request: ViewerNavigationRequest) {
         match request {
             ViewerNavigationRequest::Direction(direction) => {
@@ -1271,6 +1317,8 @@ impl MyCasaApp {
 
         if response.clicked() {
             self.selected_photo = Some(photo.id);
+        }
+        if response.double_clicked() {
             self.viewer.open(photo.clone());
         }
 
@@ -1344,22 +1392,13 @@ impl MyCasaApp {
             egui::StrokeKind::Inside,
         );
 
-        let name = photo
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("photo");
-        let label = crate::ui_text::middle_truncate(name, thumbnail_label_limit(thumbnail_size.x));
-        ui.painter().text(
-            egui::pos2(
-                rect.center().x,
-                thumb_rect.bottom() + TILE_LABEL_HEIGHT * 0.55,
-            ),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::TextStyle::Small.resolve(ui.style()),
-            Color32::from_gray(55),
-        );
+        if selected {
+            let indicator_rect = egui::Rect::from_min_size(
+                egui::pos2(thumb_rect.left(), thumb_rect.bottom() + 5.0),
+                Vec2::new(thumb_rect.width(), 3.0),
+            );
+            ui.painter().rect_filled(indicator_rect, 1.0, PICASA_BLUE);
+        }
     }
 
     fn ui_people_panel(&mut self, ui: &mut egui::Ui) {
@@ -1404,25 +1443,42 @@ impl MyCasaApp {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, Color32::from_rgb(238, 240, 242));
         ui.vertical(|ui| {
-            let strip_rect =
-                egui::Rect::from_min_size(ui.min_rect().min, Vec2::new(ui.available_width(), 5.0));
-            ui.painter().rect_filled(strip_rect, 0.0, PICASA_BLUE);
-            ui.add_space(7.0);
+            let detail_text = self
+                .selected_photo
+                .and_then(|photo_id| self.photos.iter().find(|photo| photo.id == photo_id))
+                .map(selected_photo_detail_text)
+                .unwrap_or_else(|| "Aucune photo selectionnee".to_owned());
+            let metrics_text = format!(
+                "{} photos | win:{}-{} | cache:{} gen:{} pending:{} active:{} fps:{:.0}",
+                self.photos.len(),
+                self.photo_window_start + 1,
+                self.photo_window_start + self.photos.len(),
+                metrics.cache_hits,
+                metrics.generated,
+                metrics.pending,
+                metrics.active_loads,
+                self.displayed_fps
+            );
+            let (detail_rect, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
+            ui.painter().rect_filled(detail_rect, 0.0, PICASA_BLUE);
+            ui.painter().text(
+                detail_rect.left_center() + Vec2::new(10.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                detail_text,
+                egui::TextStyle::Small.resolve(ui.style()),
+                Color32::WHITE,
+            );
+            ui.painter().text(
+                detail_rect.right_center() - Vec2::new(10.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                metrics_text,
+                egui::TextStyle::Small.resolve(ui.style()),
+                Color32::from_rgb(232, 245, 252),
+            );
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&self.status).color(Color32::from_gray(55)));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(format!(
-                        "{} photos | win:{}-{} | cache:{} gen:{} pending:{} active:{} fps:{:.0}",
-                        self.photos.len(),
-                        self.photo_window_start + 1,
-                        self.photo_window_start + self.photos.len(),
-                        metrics.cache_hits,
-                        metrics.generated,
-                        metrics.pending,
-                        metrics.active_loads,
-                        self.displayed_fps
-                    ));
-                });
+                ui.label(RichText::new(&self.status).color(Color32::from_gray(85)));
             });
             ui.separator();
             ui.horizontal_wrapped(|ui| {
@@ -1458,6 +1514,84 @@ pub fn library_grid_width(panel_rect: egui::Rect) -> f32 {
 fn centered_grid_left_padding(available_width: f32, columns: usize, tile_width: f32) -> f32 {
     let used_width = columns.max(1) as f32 * tile_width;
     ((available_width - used_width) / 2.0).max(0.0)
+}
+
+fn grid_navigation_photo_ids(
+    photos: &[Photo],
+    view_mode: LibraryViewMode,
+    columns: usize,
+) -> Vec<i64> {
+    match view_mode {
+        LibraryViewMode::FolderTree => photos.iter().map(|photo| photo.id).collect(),
+        LibraryViewMode::RetroChronological => retrochronological_grid_rows(photos, columns)
+            .into_iter()
+            .flat_map(|row| match row {
+                ChronologicalGridRow::Section { photos, .. }
+                | ChronologicalGridRow::Photos(photos) => photos,
+            })
+            .map(|index| photos[index].id)
+            .collect(),
+    }
+}
+
+fn selected_photo_after_grid_navigation(
+    photo_ids: &[i64],
+    selected_photo: Option<i64>,
+    columns: usize,
+    direction: GridNavigationDirection,
+) -> Option<i64> {
+    if photo_ids.is_empty() {
+        return None;
+    }
+    let Some(selected_photo) = selected_photo else {
+        return photo_ids.first().copied();
+    };
+
+    let columns = columns.max(1);
+    let current_index = photo_ids
+        .iter()
+        .position(|id| *id == selected_photo)
+        .unwrap_or(0);
+    let next_index = match direction {
+        GridNavigationDirection::Previous => current_index.saturating_sub(1),
+        GridNavigationDirection::Next => (current_index + 1).min(photo_ids.len() - 1),
+        GridNavigationDirection::Up => current_index.saturating_sub(columns),
+        GridNavigationDirection::Down => (current_index + columns).min(photo_ids.len() - 1),
+    };
+    Some(photo_ids[next_index])
+}
+
+fn selected_photo_detail_text(photo: &Photo) -> String {
+    let name = photo
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("photo");
+    let dimensions = match (photo.width, photo.height) {
+        (Some(width), Some(height)) => format!("{width} x {height}"),
+        _ => "dimensions inconnues".to_owned(),
+    };
+    let size = photo
+        .file_size
+        .map(format_file_size)
+        .unwrap_or_else(|| "taille inconnue".to_owned());
+    format!("{name}    {dimensions}    {size}")
+}
+
+fn format_file_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    if bytes < 1024 {
+        format!("{bytes} o")
+    } else if (bytes as f64) < MIB {
+        format!("{:.1} Ko", bytes as f64 / KIB)
+    } else if (bytes as f64) < GIB {
+        format!("{:.1} Mo", bytes as f64 / MIB)
+    } else {
+        format!("{:.1} Go", bytes as f64 / GIB)
+    }
 }
 
 impl InertialScrollState {
@@ -1933,10 +2067,6 @@ fn photo_row_height(mode: ThumbnailSizeMode) -> f32 {
     tile_height(mode) + TILE_PADDING
 }
 
-fn thumbnail_label_limit(thumbnail_width: f32) -> usize {
-    (thumbnail_width / 7.0).round().clamp(14.0, 28.0) as usize
-}
-
 fn thumbnail_mode_status_text(mode: ThumbnailSizeMode) -> &'static str {
     match mode {
         ThumbnailSizeMode::Small => "Petites vignettes",
@@ -2064,6 +2194,7 @@ impl eframe::App for MyCasaApp {
                     ui.separator();
                     self.ui_grid(ui);
                 });
+            self.handle_library_keyboard(ctx);
         }
 
         self.handle_viewer_keyboard(ctx);
@@ -2091,6 +2222,80 @@ mod tests {
     #[test]
     fn centered_grid_left_padding_never_goes_negative() {
         assert_eq!(centered_grid_left_padding(300.0, 3, 150.0), 0.0);
+    }
+
+    #[test]
+    fn selected_photo_grid_navigation_moves_by_columns() {
+        let photo_ids = vec![10, 11, 12, 13, 14, 15];
+
+        assert_eq!(
+            selected_photo_after_grid_navigation(
+                &photo_ids,
+                Some(11),
+                3,
+                GridNavigationDirection::Down
+            ),
+            Some(14)
+        );
+        assert_eq!(
+            selected_photo_after_grid_navigation(
+                &photo_ids,
+                Some(14),
+                3,
+                GridNavigationDirection::Up
+            ),
+            Some(11)
+        );
+        assert_eq!(
+            selected_photo_after_grid_navigation(
+                &photo_ids,
+                Some(15),
+                3,
+                GridNavigationDirection::Next
+            ),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn selected_photo_grid_navigation_selects_first_when_none_selected() {
+        assert_eq!(
+            selected_photo_after_grid_navigation(&[10, 11], None, 3, GridNavigationDirection::Next),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn grid_navigation_photo_ids_follow_chronological_display_order() {
+        let mut newest = photo_for_test(1);
+        newest.modified_at = Some(1_709_251_200);
+        let mut oldest = photo_for_test(2);
+        oldest.modified_at = Some(1_704_067_200);
+        let mut middle = photo_for_test(3);
+        middle.modified_at = Some(1_709_164_800);
+
+        assert_eq!(
+            grid_navigation_photo_ids(
+                &[oldest, newest, middle],
+                LibraryViewMode::RetroChronological,
+                2
+            ),
+            vec![1, 3, 2]
+        );
+    }
+
+    #[test]
+    fn selected_photo_detail_text_includes_name_dimensions_and_size() {
+        let mut photo = photo_for_test(7);
+        photo.path = PathBuf::from("/tmp/IMG-0007.jpg");
+        photo.width = Some(4032);
+        photo.height = Some(2268);
+        photo.file_size = Some(5_242_880);
+
+        assert_eq!(
+            selected_photo_detail_text(&photo),
+            "IMG-0007.jpg    4032 x 2268    5.0 Mo"
+        );
     }
 
     #[test]
@@ -2714,13 +2919,6 @@ mod tests {
             photo_row_height(ThumbnailSizeMode::Small)
                 < photo_row_height(ThumbnailSizeMode::Normal)
         );
-    }
-
-    #[test]
-    fn thumbnail_label_limit_scales_with_reference_tile_width() {
-        assert_eq!(thumbnail_label_limit(80.0), 14);
-        assert!(thumbnail_label_limit(160.0) > thumbnail_label_limit(118.0));
-        assert_eq!(thumbnail_label_limit(400.0), 28);
     }
 
     #[test]
