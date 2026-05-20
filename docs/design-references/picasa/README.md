@@ -40,3 +40,6 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - Phototheque : actions de collection sous le titre et tray bas a boutons fixes plus proche Picasa 3.
 - Phototheque : grille recentree et tuiles plus rectangulaires avec ombre legere, pour se rapprocher de la densite de `11-library-flat-chronological-reference.png`.
 - Phototheque : clic simple sur une vignette selectionne la photo, double-clic ouvre le viewer, et la bande bleue basse affiche les details de la photo selectionnee.
+- Phototheque : les cadres de vignettes suivent le ratio reel de l'image affichee, notamment un cadre vertical serre pour les photos portrait.
+- Phototheque : la touche Entree ouvre en viewer la photo selectionnee, les ombres de vignettes sont peintes autour du cadre reel de l'image, et la selection utilise un double contour serre plutot qu'un fond de cellule bleu.
+- Phototheque : la navigation clavier aux fleches maintient la vignette selectionnee visible en ajustant le scroll principal.

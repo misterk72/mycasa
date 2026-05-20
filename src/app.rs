@@ -142,6 +142,7 @@ pub struct MyCasaApp {
     sidebar_auto_scroll_target: Option<ChronologySectionKey>,
     thumbnail_size_mode: ThumbnailSizeMode,
     grid_columns: usize,
+    main_viewport_height: f32,
     main_scroll: InertialScrollState,
     viewer_wheel_navigation: ViewerWheelNavigationState,
     status: String,
@@ -208,6 +209,7 @@ impl MyCasaApp {
             sidebar_auto_scroll_target: None,
             thumbnail_size_mode: ThumbnailSizeMode::Normal,
             grid_columns: 1,
+            main_viewport_height: 0.0,
             main_scroll: InertialScrollState::default(),
             viewer_wheel_navigation: ViewerWheelNavigationState::default(),
             status,
@@ -1101,6 +1103,7 @@ impl MyCasaApp {
         inner_rect: egui::Rect,
     ) {
         let max_offset = (content_size.y - inner_rect.height()).max(0.0);
+        self.main_viewport_height = inner_rect.height();
         let external_scroll_active = ui.ctx().input(|input| input.pointer.any_down());
         self.main_scroll
             .sync_from_scroll_area(output_offset, max_offset, external_scroll_active);
@@ -1209,6 +1212,13 @@ impl MyCasaApp {
             return;
         }
 
+        if ctx.input(|input| input.key_pressed(egui::Key::Enter))
+            && let Some(photo_id) = selected_photo_to_open(&self.photos, self.selected_photo)
+        {
+            self.open_viewer_photo_internal(photo_id, None);
+            return;
+        }
+
         let direction = ctx.input(|input| {
             if input.key_pressed(egui::Key::ArrowLeft) {
                 Some(GridNavigationDirection::Previous)
@@ -1235,7 +1245,31 @@ impl MyCasaApp {
             direction,
         ) {
             self.selected_photo = Some(photo_id);
+            self.scroll_selected_photo_into_view(photo_id);
+            ctx.request_repaint();
         }
+    }
+
+    fn scroll_selected_photo_into_view(&mut self, photo_id: i64) {
+        let Some((top, bottom)) = selected_photo_scroll_bounds(
+            &self.photos,
+            self.library_view_mode,
+            self.grid_columns,
+            self.thumbnail_size_mode,
+            photo_id,
+        ) else {
+            return;
+        };
+
+        self.main_scroll.offset = scroll_offset_to_keep_bounds_visible(
+            self.main_scroll.offset,
+            self.main_viewport_height,
+            self.main_scroll.max_offset,
+            top,
+            bottom,
+            TILE_PADDING * 2.0,
+        );
+        self.main_scroll.velocity = 0.0;
     }
 
     fn handle_viewer_navigation_request(&mut self, request: ViewerNavigationRequest) {
@@ -1322,24 +1356,19 @@ impl MyCasaApp {
             self.viewer.open(photo.clone());
         }
 
-        if selected || response.hovered() {
-            let fill = if selected {
-                Color32::from_rgb(230, 242, 255)
-            } else {
-                Color32::from_rgb(246, 250, 255)
-            };
-            ui.painter().rect_filled(rect.shrink(1.0), 2.0, fill);
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(rect.shrink(1.0), 2.0, Color32::from_rgb(246, 250, 255));
         }
 
         let thumb_rect = egui::Rect::from_min_size(
             rect.min + Vec2::new(TILE_PADDING, TILE_PADDING),
             thumbnail_size,
         );
-        let shadow_rect = thumb_rect.translate(Vec2::new(2.0, 2.0));
-        ui.painter().rect_filled(shadow_rect, 1.0, TILE_SHADOW);
 
         match self.thumbnails.state_for(ui.ctx(), photo) {
             ThumbnailState::Pending => {
+                draw_thumbnail_shadow(ui, thumb_rect);
                 ui.painter()
                     .rect_filled(thumb_rect, 4.0, Color32::from_rgb(235, 235, 232));
                 ui.painter().text(
@@ -1349,24 +1378,23 @@ impl MyCasaApp {
                     egui::TextStyle::Small.resolve(ui.style()),
                     Color32::from_gray(135),
                 );
+                self.stroke_thumbnail_frame(ui, thumb_rect, selected);
             }
             ThumbnailState::Ready(texture) => {
-                let image_size = texture.size_vec2();
-                let scale = (thumb_rect.width() / image_size.x)
-                    .min(thumb_rect.height() / image_size.y)
-                    .min(1.0);
-                let fitted_size = image_size * scale;
-                let image_rect = egui::Rect::from_center_size(thumb_rect.center(), fitted_size);
+                let image_rect = thumbnail_image_rect(thumb_rect, texture.size_vec2());
                 ui.painter()
                     .rect_filled(thumb_rect, 4.0, Color32::from_rgb(246, 246, 244));
+                draw_thumbnail_shadow(ui, image_rect);
                 ui.painter().image(
                     texture.id(),
                     image_rect,
                     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                self.stroke_thumbnail_frame(ui, image_rect, selected);
             }
             ThumbnailState::Unavailable => {
+                draw_thumbnail_shadow(ui, thumb_rect);
                 ui.painter()
                     .rect_filled(thumb_rect, 4.0, Color32::from_rgb(242, 232, 232));
                 ui.painter().text(
@@ -1376,29 +1404,26 @@ impl MyCasaApp {
                     egui::TextStyle::Small.resolve(ui.style()),
                     Color32::from_rgb(210, 140, 140),
                 );
+                self.stroke_thumbnail_frame(ui, thumb_rect, selected);
             }
         }
+    }
+
+    fn stroke_thumbnail_frame(&self, ui: &egui::Ui, rect: egui::Rect, selected: bool) {
+        if selected {
+            ui.painter().rect_stroke(
+                rect.expand(3.0),
+                1.0,
+                Stroke::new(2.0, Color32::from_rgb(145, 203, 240)),
+                egui::StrokeKind::Inside,
+            );
+        }
         ui.painter().rect_stroke(
-            thumb_rect,
+            rect,
             1.0,
-            Stroke::new(
-                if selected { 2.0 } else { 1.0 },
-                if selected {
-                    PICASA_BLUE
-                } else {
-                    Color32::from_rgb(214, 214, 210)
-                },
-            ),
+            thumbnail_frame_stroke(selected),
             egui::StrokeKind::Inside,
         );
-
-        if selected {
-            let indicator_rect = egui::Rect::from_min_size(
-                egui::pos2(thumb_rect.left(), thumb_rect.bottom() + 5.0),
-                Vec2::new(thumb_rect.width(), 3.0),
-            );
-            ui.painter().rect_filled(indicator_rect, 1.0, PICASA_BLUE);
-        }
     }
 
     fn ui_people_panel(&mut self, ui: &mut egui::Ui) {
@@ -1516,6 +1541,39 @@ fn centered_grid_left_padding(available_width: f32, columns: usize, tile_width: 
     ((available_width - used_width) / 2.0).max(0.0)
 }
 
+fn thumbnail_image_rect(container: egui::Rect, image_size: Vec2) -> egui::Rect {
+    if image_size.x <= 0.0 || image_size.y <= 0.0 {
+        return egui::Rect::from_center_size(container.center(), Vec2::ZERO);
+    }
+
+    let scale = (container.width() / image_size.x)
+        .min(container.height() / image_size.y)
+        .min(1.0);
+    egui::Rect::from_center_size(container.center(), image_size * scale)
+}
+
+fn thumbnail_shadow_rect(frame_rect: egui::Rect) -> egui::Rect {
+    frame_rect.translate(Vec2::new(3.0, 3.0)).expand(1.0)
+}
+
+fn draw_thumbnail_shadow(ui: &egui::Ui, frame_rect: egui::Rect) {
+    ui.painter().rect_filled(
+        thumbnail_shadow_rect(frame_rect),
+        2.0,
+        Color32::from_rgba_premultiplied(0, 0, 0, 24),
+    );
+    ui.painter()
+        .rect_filled(frame_rect.translate(Vec2::new(1.5, 1.5)), 1.0, TILE_SHADOW);
+}
+
+fn thumbnail_frame_stroke(selected: bool) -> Stroke {
+    if selected {
+        Stroke::new(2.0, PICASA_BLUE)
+    } else {
+        Stroke::new(1.25, Color32::from_rgb(156, 160, 156))
+    }
+}
+
 fn grid_navigation_photo_ids(
     photos: &[Photo],
     view_mode: LibraryViewMode,
@@ -1559,6 +1617,70 @@ fn selected_photo_after_grid_navigation(
         GridNavigationDirection::Down => (current_index + columns).min(photo_ids.len() - 1),
     };
     Some(photo_ids[next_index])
+}
+
+fn selected_photo_scroll_bounds(
+    photos: &[Photo],
+    view_mode: LibraryViewMode,
+    columns: usize,
+    thumbnail_mode: ThumbnailSizeMode,
+    selected_photo: i64,
+) -> Option<(f32, f32)> {
+    let columns = columns.max(1);
+    match view_mode {
+        LibraryViewMode::FolderTree => {
+            let index = photos.iter().position(|photo| photo.id == selected_photo)?;
+            let row_index = index / columns;
+            let top = row_index as f32 * photo_row_height(thumbnail_mode);
+            Some((top, top + photo_row_height(thumbnail_mode)))
+        }
+        LibraryViewMode::RetroChronological => {
+            let photo_index = photos.iter().position(|photo| photo.id == selected_photo)?;
+            let rows = retrochronological_grid_rows(photos, columns);
+            let layout = chronological_row_layout(&rows, thumbnail_mode);
+            rows.iter().zip(layout).find_map(|(row, bounds)| match row {
+                ChronologicalGridRow::Section { photos, .. }
+                | ChronologicalGridRow::Photos(photos)
+                    if photos.contains(&photo_index) =>
+                {
+                    Some(bounds)
+                }
+                _ => None,
+            })
+        }
+    }
+}
+
+fn scroll_offset_to_keep_bounds_visible(
+    current_offset: f32,
+    viewport_height: f32,
+    max_offset: f32,
+    top: f32,
+    bottom: f32,
+    margin: f32,
+) -> f32 {
+    if viewport_height <= 0.0 {
+        return clamp_scroll_offset(current_offset, max_offset);
+    }
+
+    let visible_top = current_offset + margin;
+    let visible_bottom = current_offset + viewport_height - margin;
+    let target = if top < visible_top {
+        top - margin
+    } else if bottom > visible_bottom {
+        bottom - viewport_height + margin
+    } else {
+        current_offset
+    };
+    clamp_scroll_offset(target, max_offset)
+}
+
+fn selected_photo_to_open(photos: &[Photo], selected_photo: Option<i64>) -> Option<i64> {
+    let selected_photo = selected_photo?;
+    photos
+        .iter()
+        .any(|photo| photo.id == selected_photo)
+        .then_some(selected_photo)
 }
 
 fn selected_photo_detail_text(photo: &Photo) -> String {
@@ -2225,6 +2347,55 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_image_rect_keeps_vertical_photo_frame_tight() {
+        let container = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(160.0, 106.0));
+        let image_rect = thumbnail_image_rect(container, Vec2::new(900.0, 1600.0));
+
+        assert_eq!(image_rect.height(), 106.0);
+        assert!(image_rect.width() < 70.0);
+        assert_eq!(image_rect.center(), container.center());
+    }
+
+    #[test]
+    fn thumbnail_image_rect_keeps_landscape_photo_frame_tight() {
+        let container = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(160.0, 106.0));
+        let image_rect = thumbnail_image_rect(container, Vec2::new(1600.0, 900.0));
+
+        assert_eq!(image_rect.width(), 160.0);
+        assert!(image_rect.height() < 100.0);
+        assert_eq!(image_rect.center(), container.center());
+    }
+
+    #[test]
+    fn thumbnail_shadow_rect_tracks_tight_image_frame() {
+        let frame = egui::Rect::from_min_size(egui::pos2(50.0, 10.0), Vec2::new(60.0, 106.0));
+        let shadow = thumbnail_shadow_rect(frame);
+
+        assert!(shadow.width() < 70.0);
+        assert!(shadow.left() > frame.left());
+        assert!(shadow.bottom() > frame.bottom());
+    }
+
+    #[test]
+    fn thumbnail_frame_stroke_is_visible_and_selection_is_stronger() {
+        let normal = thumbnail_frame_stroke(false);
+        let selected = thumbnail_frame_stroke(true);
+
+        assert!(normal.width > 1.0);
+        assert_eq!(selected.color, PICASA_BLUE);
+        assert!(selected.width > normal.width);
+    }
+
+    #[test]
+    fn selected_photo_to_open_requires_existing_selection() {
+        let photos: Vec<Photo> = (1..=3).map(photo_for_test).collect();
+
+        assert_eq!(selected_photo_to_open(&photos, Some(2)), Some(2));
+        assert_eq!(selected_photo_to_open(&photos, Some(9)), None);
+        assert_eq!(selected_photo_to_open(&photos, None), None);
+    }
+
+    #[test]
     fn selected_photo_grid_navigation_moves_by_columns() {
         let photo_ids = vec![10, 11, 12, 13, 14, 15];
 
@@ -2262,6 +2433,63 @@ mod tests {
         assert_eq!(
             selected_photo_after_grid_navigation(&[10, 11], None, 3, GridNavigationDirection::Next),
             Some(10)
+        );
+    }
+
+    #[test]
+    fn selected_photo_scroll_bounds_use_folder_grid_row() {
+        let photos: Vec<Photo> = (1..=8).map(photo_for_test).collect();
+
+        assert_eq!(
+            selected_photo_scroll_bounds(
+                &photos,
+                LibraryViewMode::FolderTree,
+                3,
+                ThumbnailSizeMode::Normal,
+                5
+            ),
+            Some((
+                photo_row_height(ThumbnailSizeMode::Normal),
+                photo_row_height(ThumbnailSizeMode::Normal) * 2.0
+            ))
+        );
+    }
+
+    #[test]
+    fn selected_photo_scroll_bounds_include_chronology_headers() {
+        let mut april = photo_for_test(1);
+        april.captured_at = Some("2026-04-03T10:00:00Z".to_owned());
+        let mut march = photo_for_test(2);
+        march.captured_at = Some("2026-03-03T10:00:00Z".to_owned());
+
+        assert_eq!(
+            selected_photo_scroll_bounds(
+                &[march, april],
+                LibraryViewMode::RetroChronological,
+                4,
+                ThumbnailSizeMode::Normal,
+                2
+            ),
+            Some((
+                chrono_section_row_height(ThumbnailSizeMode::Normal),
+                chrono_section_row_height(ThumbnailSizeMode::Normal) * 2.0
+            ))
+        );
+    }
+
+    #[test]
+    fn scroll_offset_to_keep_bounds_visible_only_moves_when_needed() {
+        assert_eq!(
+            scroll_offset_to_keep_bounds_visible(100.0, 300.0, 1000.0, 150.0, 240.0, 16.0),
+            100.0
+        );
+        assert_eq!(
+            scroll_offset_to_keep_bounds_visible(100.0, 300.0, 1000.0, 20.0, 120.0, 16.0),
+            4.0
+        );
+        assert_eq!(
+            scroll_offset_to_keep_bounds_visible(100.0, 300.0, 1000.0, 360.0, 460.0, 16.0),
+            176.0
         );
     }
 
