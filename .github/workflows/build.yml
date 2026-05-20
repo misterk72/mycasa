@@ -1,0 +1,92 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            artifact: mycasa-linux-x86_64
+            archive: mycasa-linux-x86_64.tar.gz
+          - name: Windows x86_64
+            os: windows-2022
+            artifact: mycasa-windows-x86_64
+            archive: mycasa-windows-x86_64.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libheif-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Install Windows native dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
+          vcpkg install libheif:x64-windows
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Package Linux artifact
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/${{ matrix.artifact }}"
+          cp target/release/mycasa "dist/${{ matrix.artifact }}/"
+          strip "dist/${{ matrix.artifact }}/mycasa"
+          tar -czf "${{ matrix.archive }}" -C dist "${{ matrix.artifact }}"
+
+      - name: Package Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist\${{ matrix.artifact }}"
+          Copy-Item "target\release\mycasa.exe" "dist\${{ matrix.artifact }}\"
+          Copy-Item "C:\vcpkg\installed\x64-windows\bin\*.dll" "dist\${{ matrix.artifact }}\" -ErrorAction SilentlyContinue
+          Compress-Archive -Path "dist\${{ matrix.artifact }}" -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
