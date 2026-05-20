@@ -132,8 +132,8 @@ mod tests {
         let contacts = parse_contacts_xml(
             r#"
 <contacts>
- <contact id="e251f092e07b1008" name="Christophe Kassabji" modified_time="2022-09-22T23:52:05+02:00" local_contact="1"/>
- <contact id="43793bd32caffa75" name="Marie Desbos" modified_time="2022-09-22T23:54:47+02:00" local_contact="1"/>
+ <contact id="e251f092e07b1008" name="Alex Martin" modified_time="2022-09-22T23:52:05+02:00" local_contact="1"/>
+ <contact id="43793bd32caffa75" name="Sam Lee" modified_time="2022-09-22T23:54:47+02:00" local_contact="1"/>
 </contacts>
 "#,
         );
@@ -143,12 +143,12 @@ mod tests {
             vec![
                 PicasaContact {
                     id: "e251f092e07b1008".to_owned(),
-                    name: "Christophe Kassabji".to_owned(),
+                    name: "Alex Martin".to_owned(),
                     modified_time: Some("2022-09-22T23:52:05+02:00".to_owned()),
                 },
                 PicasaContact {
                     id: "43793bd32caffa75".to_owned(),
-                    name: "Marie Desbos".to_owned(),
+                    name: "Sam Lee".to_owned(),
                     modified_time: Some("2022-09-22T23:54:47+02:00".to_owned()),
                 },
             ]

@@ -28,9 +28,9 @@ Sources de comportement utilisees pour cette decision :
 - `Contacts2` + `faces=rect64(...),contact_id` vers `photo_faces`.
 
 ## Analyse De La Base Locale Trouvee
-Une installation Picasa PlayOnLinux a ete trouvee ici :
+Une installation Picasa PlayOnLinux peut etre detectee dans un profil utilisateur local, par exemple :
 
-`/home/kassabji/.PlayOnLinux/wineprefix/Picasa/drive_c/users/kassabji/Local Settings/Application Data/Google/Picasa2/`
+`~/.PlayOnLinux/wineprefix/Picasa/drive_c/users/<user>/Local Settings/Application Data/Google/Picasa2/`
 
 Fichiers observes :
 - `Picasa2Albums/watchedfolders.txt` pointe vers `Z:\mnt\nas_Media\Photos_sorted\`.

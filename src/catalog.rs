@@ -21,9 +21,22 @@ pub struct Photo {
     pub picasa_face_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhotoFace {
+    pub rect64: String,
+    pub contact_id: String,
+    pub contact_name: Option<String>,
+}
+
 pub struct Catalog {
     path: PathBuf,
     connection: Connection,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogPhotoFilters {
+    pub starred_only: bool,
+    pub faces_only: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +93,24 @@ impl Catalog {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Photo>, CatalogError> {
+        self.search_photos_page_with_filters(
+            search,
+            CatalogPhotoFilters {
+                starred_only,
+                faces_only: false,
+            },
+            limit,
+            offset,
+        )
+    }
+
+    pub fn search_photos_page_with_filters(
+        &self,
+        search: &str,
+        filters: CatalogPhotoFilters,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Photo>, CatalogError> {
         let pattern = format!("%{}%", search.trim());
         let has_search = !search.trim().is_empty();
         let sql = format!(
@@ -91,7 +122,7 @@ impl Catalog {
                  ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
                           id DESC
                  LIMIT ?1 OFFSET ?2",
-            photo_search_where_clause(has_search, starred_only, "?3")
+            photo_search_where_clause(has_search, filters, "?3")
         );
         let mut statement = self.connection.prepare(&sql)?;
 
@@ -134,17 +165,54 @@ impl Catalog {
         self.chronology_months_filtered(search, false)
     }
 
+    pub fn photo_faces(&self, photo_id: i64) -> Result<Vec<PhotoFace>, CatalogError> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT rect64, contact_id, contact_name
+            FROM photo_faces
+            WHERE photo_id = ?1
+            ORDER BY id
+            ",
+        )?;
+        let faces = statement
+            .query_map(params![photo_id], |row| {
+                Ok(PhotoFace {
+                    rect64: row.get(0)?,
+                    contact_id: row.get(1)?,
+                    contact_name: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(faces)
+    }
+
     pub fn chronology_months_filtered(
         &self,
         search: &str,
         starred_only: bool,
     ) -> Result<Vec<(i32, u32)>, CatalogError> {
-        let mut months = self.search_photo_time_keys(search, starred_only)?;
+        self.chronology_months_with_filters(
+            search,
+            CatalogPhotoFilters {
+                starred_only,
+                faces_only: false,
+            },
+        )
+    }
+
+    pub fn chronology_months_with_filters(
+        &self,
+        search: &str,
+        filters: CatalogPhotoFilters,
+    ) -> Result<Vec<(i32, u32)>, CatalogError> {
+        let mut months = self.search_photo_time_keys(search, filters)?;
         months.sort_unstable_by(|left, right| right.cmp(left));
         months.dedup();
         Ok(months)
     }
 
+    #[cfg(test)]
     pub fn photo_offset_for_month(
         &self,
         search: &str,
@@ -154,6 +222,7 @@ impl Catalog {
         self.photo_offset_for_month_filtered(search, false, year, month)
     }
 
+    #[cfg(test)]
     pub fn photo_offset_for_month_filtered(
         &self,
         search: &str,
@@ -161,8 +230,26 @@ impl Catalog {
         year: i32,
         month: u32,
     ) -> Result<Option<usize>, CatalogError> {
+        self.photo_offset_for_month_with_filters(
+            search,
+            CatalogPhotoFilters {
+                starred_only,
+                faces_only: false,
+            },
+            year,
+            month,
+        )
+    }
+
+    pub fn photo_offset_for_month_with_filters(
+        &self,
+        search: &str,
+        filters: CatalogPhotoFilters,
+        year: i32,
+        month: u32,
+    ) -> Result<Option<usize>, CatalogError> {
         Ok(self
-            .search_photo_time_keys(search, starred_only)?
+            .search_photo_time_keys(search, filters)?
             .into_iter()
             .position(|(photo_year, photo_month)| photo_year == year && photo_month == month))
     }
@@ -170,7 +257,7 @@ impl Catalog {
     fn search_photo_time_keys(
         &self,
         search: &str,
-        starred_only: bool,
+        filters: CatalogPhotoFilters,
     ) -> Result<Vec<(i32, u32)>, CatalogError> {
         let pattern = format!("%{}%", search.trim());
         let has_search = !search.trim().is_empty();
@@ -180,7 +267,7 @@ impl Catalog {
                  {}
                  ORDER BY COALESCE(captured_at, datetime(modified_at, 'unixepoch'), imported_at) DESC,
                           id DESC",
-            photo_search_where_clause(has_search, starred_only, "?1")
+            photo_search_where_clause(has_search, filters, "?1")
         );
         let mut statement = self.connection.prepare(&sql)?;
 
@@ -422,20 +509,30 @@ fn parse_photo_timestamp(value: &str) -> Option<i64> {
 
 fn photo_search_where_clause(
     has_search: bool,
-    starred_only: bool,
+    filters: CatalogPhotoFilters,
     search_placeholder: &str,
 ) -> String {
-    let search_clause = format!(
-        "(file_name LIKE {0} OR parent_path LIKE {0} OR path LIKE {0}
-          OR picasa_caption LIKE {0} OR picasa_keywords LIKE {0})",
-        search_placeholder
-    );
+    let mut clauses = Vec::new();
+    if has_search {
+        clauses.push(format!(
+            "(file_name LIKE {0} OR parent_path LIKE {0} OR path LIKE {0}
+              OR picasa_caption LIKE {0} OR picasa_keywords LIKE {0})",
+            search_placeholder
+        ));
+    }
+    if filters.starred_only {
+        clauses.push("picasa_starred = 1".to_owned());
+    }
+    if filters.faces_only {
+        clauses.push(
+            "EXISTS (SELECT 1 FROM photo_faces WHERE photo_faces.photo_id = photos.id)".to_owned(),
+        );
+    }
 
-    match (has_search, starred_only) {
-        (false, false) => String::new(),
-        (false, true) => "WHERE picasa_starred = 1".to_owned(),
-        (true, false) => format!("WHERE {search_clause}"),
-        (true, true) => format!("WHERE picasa_starred = 1 AND {search_clause}"),
+    if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
     }
 }
 
@@ -734,6 +831,65 @@ mod tests {
     }
 
     #[test]
+    fn search_face_photos_filters_catalog_before_paging() {
+        let path = test_db_path("face-search");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        for (index, has_face) in [(1, false), (2, true), (3, true)] {
+            let mut photo = crate::indexer::IndexedPhoto::for_test(PathBuf::from(format!(
+                "/photos/{index}.jpg"
+            )));
+            photo.modified_at = Some(1_700_000_000 + index);
+            photo.picasa = Some(PicasaIniEntry {
+                caption: Some("family".to_owned()),
+                keywords: None,
+                starred: false,
+                filters: None,
+                faces: has_face
+                    .then(|| PicasaFace {
+                        rect64: format!("face-{index}"),
+                        contact_id: format!("contact-{index}"),
+                        name: Some(format!("Person {index}")),
+                    })
+                    .into_iter()
+                    .collect(),
+            });
+            catalog.upsert_photo(&photo).unwrap();
+        }
+
+        let first_page = catalog
+            .search_photos_page_with_filters(
+                "family",
+                CatalogPhotoFilters {
+                    faces_only: true,
+                    ..Default::default()
+                },
+                1,
+                0,
+            )
+            .unwrap();
+        let second_page = catalog
+            .search_photos_page_with_filters(
+                "family",
+                CatalogPhotoFilters {
+                    faces_only: true,
+                    ..Default::default()
+                },
+                1,
+                1,
+            )
+            .unwrap();
+
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(second_page.len(), 1);
+        assert!(first_page[0].picasa_face_count > 0);
+        assert!(second_page[0].picasa_face_count > 0);
+        assert_eq!(first_page[0].path, PathBuf::from("/photos/3.jpg"));
+        assert_eq!(second_page[0].path, PathBuf::from("/photos/2.jpg"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn chronology_months_can_be_filtered_to_starred_photos() {
         let path = test_db_path("starred-months");
         let catalog = Catalog::open(path.clone()).unwrap();
@@ -769,6 +925,60 @@ mod tests {
         assert_eq!(
             catalog
                 .photo_offset_for_month_filtered("", true, 2025, 12)
+                .unwrap(),
+            Some(1)
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn chronology_months_can_be_filtered_to_face_photos() {
+        let path = test_db_path("face-months");
+        let catalog = Catalog::open(path.clone()).unwrap();
+        for (index, captured_at, has_face) in [
+            (1, "2026-04-03T10:00:00Z", true),
+            (2, "2026-03-01T10:00:00Z", false),
+            (3, "2025-12-24T10:00:00Z", true),
+        ] {
+            let mut photo = crate::indexer::IndexedPhoto::for_test(PathBuf::from(format!(
+                "/photos/{index}.jpg"
+            )));
+            photo.picasa = Some(PicasaIniEntry {
+                caption: None,
+                keywords: None,
+                starred: false,
+                filters: None,
+                faces: has_face
+                    .then(|| PicasaFace {
+                        rect64: format!("face-{index}"),
+                        contact_id: format!("contact-{index}"),
+                        name: None,
+                    })
+                    .into_iter()
+                    .collect(),
+            });
+            catalog.upsert_photo(&photo).unwrap();
+            catalog
+                .connection
+                .execute(
+                    "UPDATE photos SET captured_at = ?1 WHERE path = ?2",
+                    params![captured_at, format!("/photos/{index}.jpg")],
+                )
+                .unwrap();
+        }
+
+        let filters = CatalogPhotoFilters {
+            faces_only: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            catalog.chronology_months_with_filters("", filters).unwrap(),
+            vec![(2026, 4), (2025, 12)]
+        );
+        assert_eq!(
+            catalog
+                .photo_offset_for_month_with_filters("", filters, 2025, 12)
                 .unwrap(),
             Some(1)
         );
@@ -895,6 +1105,21 @@ mod tests {
         assert_eq!(photos[0].picasa_caption.as_deref(), Some("Updated caption"));
         assert!(!photos[0].picasa_starred);
         assert_eq!(photos[0].picasa_face_count, 2);
+        assert_eq!(
+            catalog.photo_faces(photos[0].id).unwrap(),
+            vec![
+                PhotoFace {
+                    rect64: "aaaaaaaaaaaaaaaa".to_owned(),
+                    contact_id: "contact-b".to_owned(),
+                    contact_name: Some("Bob".to_owned())
+                },
+                PhotoFace {
+                    rect64: "bbbbbbbbbbbbbbbb".to_owned(),
+                    contact_id: "contact-c".to_owned(),
+                    contact_name: None
+                }
+            ]
+        );
 
         let photo_count: i64 = catalog
             .connection

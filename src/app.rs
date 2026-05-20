@@ -10,7 +10,7 @@ use egui::{
     containers::scroll_area::ScrollSource,
 };
 
-use crate::catalog::{Catalog, CatalogError, Photo};
+use crate::catalog::{Catalog, CatalogError, CatalogPhotoFilters, Photo, PhotoFace};
 use crate::debounce::Debouncer;
 use crate::folders::add_folder_once;
 use crate::grid::{columns_for_width, item_range_for_row, row_count};
@@ -80,6 +80,7 @@ enum ThumbnailSizeMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PicasaFilterState {
     starred_only: bool,
+    faces_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -281,9 +282,9 @@ impl MyCasaApp {
         self.photo_limit = next_limit;
 
         if let Ok(catalog) = &self.catalog {
-            match catalog.search_photos_page_filtered(
+            match catalog.search_photos_page_with_filters(
                 &self.search,
-                self.photo_filters.starred_only,
+                catalog_filters(self.photo_filters),
                 page_size,
                 page_offset,
             ) {
@@ -344,9 +345,9 @@ impl MyCasaApp {
         };
 
         if let Ok(catalog) = &self.catalog {
-            match catalog.search_photos_page_filtered(
+            match catalog.search_photos_page_with_filters(
                 &self.search,
-                self.photo_filters.starred_only,
+                catalog_filters(self.photo_filters),
                 page_size,
                 page_offset,
             ) {
@@ -407,14 +408,10 @@ impl MyCasaApp {
 
     fn refresh_photos(&mut self) {
         if let Ok(catalog) = &self.catalog {
-            let photos_result = catalog.search_photos_page_filtered(
-                &self.search,
-                self.photo_filters.starred_only,
-                self.photo_limit,
-                0,
-            );
-            let chronology_result =
-                catalog.chronology_months_filtered(&self.search, self.photo_filters.starred_only);
+            let filters = catalog_filters(self.photo_filters);
+            let photos_result =
+                catalog.search_photos_page_with_filters(&self.search, filters, self.photo_limit, 0);
+            let chronology_result = catalog.chronology_months_with_filters(&self.search, filters);
             match photos_result {
                 Ok(photos) => {
                     self.all_photos_loaded = photos.len() < self.photo_limit;
@@ -444,17 +441,19 @@ impl MyCasaApp {
 
     fn load_photo_window_at_month(&mut self, key: ChronologySectionKey) {
         if let Ok(catalog) = &self.catalog {
-            let offset_result = if self.photo_filters.starred_only {
-                catalog.photo_offset_for_month_filtered(&self.search, true, key.year, key.month)
-            } else {
-                catalog.photo_offset_for_month(&self.search, key.year, key.month)
-            };
+            let filters = catalog_filters(self.photo_filters);
+            let offset_result = catalog.photo_offset_for_month_with_filters(
+                &self.search,
+                filters,
+                key.year,
+                key.month,
+            );
             let Ok(Some(offset)) = offset_result else {
                 return;
             };
-            match catalog.search_photos_page_filtered(
+            match catalog.search_photos_page_with_filters(
                 &self.search,
-                self.photo_filters.starred_only,
+                filters,
                 INITIAL_PHOTO_LIMIT,
                 offset,
             ) {
@@ -804,11 +803,14 @@ impl MyCasaApp {
             for label in picasa_filter_button_labels() {
                 if picasa_filter_button_enabled(label) {
                     if ui
-                        .selectable_label(self.photo_filters.starred_only, label)
-                        .on_hover_text("Afficher uniquement les favoris Picasa")
+                        .selectable_label(
+                            picasa_filter_button_selected(self.photo_filters, label),
+                            label,
+                        )
+                        .on_hover_text(picasa_filter_button_tooltip(label))
                         .clicked()
                     {
-                        self.photo_filters.starred_only = !self.photo_filters.starred_only;
+                        toggle_picasa_filter(&mut self.photo_filters, label);
                         self.reset_photo_window();
                         self.refresh_photos();
                         self.status = picasa_filter_status_text(self.photo_filters).to_owned();
@@ -1452,10 +1454,22 @@ impl MyCasaApp {
                     available_chars,
                 ))
                 .on_hover_text(photo.path.display().to_string());
-                if photo.picasa_face_count > 0 {
-                    ui.label(format!("{} visage(s) Picasa", photo.picasa_face_count));
-                } else {
-                    ui.label("Aucun visage detecte dans le catalogue");
+                match self
+                    .catalog
+                    .as_ref()
+                    .map(|catalog| catalog.photo_faces(photo.id))
+                {
+                    Ok(Ok(faces)) => {
+                        for label in people_panel_face_labels(&faces, photo.picasa_face_count) {
+                            ui.label(label);
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        ui.label(format!("Visages indisponibles: {error}"));
+                    }
+                    Err(_) => {
+                        ui.label("Catalogue indisponible");
+                    }
                 }
             }
         } else {
@@ -1706,6 +1720,30 @@ fn selected_photo_status_text(photo: &Photo) -> String {
         .map(format_file_size)
         .unwrap_or_else(|| "taille inconnue".to_owned());
     format!("{name}    {date}    {dimensions}    {size}")
+}
+
+fn people_panel_face_labels(faces: &[PhotoFace], fallback_count: usize) -> Vec<String> {
+    if faces.is_empty() {
+        return if fallback_count > 0 {
+            vec![format!("{fallback_count} visage(s) Picasa")]
+        } else {
+            vec!["Aucun visage detecte dans le catalogue".to_owned()]
+        };
+    }
+
+    faces
+        .iter()
+        .enumerate()
+        .map(|(index, face)| {
+            face.contact_name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .map_or_else(
+                    || format!("Visage {} ({})", index + 1, face.contact_id),
+                    ToOwned::to_owned,
+                )
+        })
+        .collect()
 }
 
 fn photo_status_count_text(visible_photo_count: usize) -> String {
@@ -2183,14 +2221,46 @@ fn picasa_filter_button_labels() -> [&'static str; 5] {
 }
 
 fn picasa_filter_button_enabled(label: &str) -> bool {
-    label == "★"
+    matches!(label, "★" | "👤")
+}
+
+fn picasa_filter_button_selected(filters: PicasaFilterState, label: &str) -> bool {
+    match label {
+        "★" => filters.starred_only,
+        "👤" => filters.faces_only,
+        _ => false,
+    }
+}
+
+fn toggle_picasa_filter(filters: &mut PicasaFilterState, label: &str) {
+    match label {
+        "★" => filters.starred_only = !filters.starred_only,
+        "👤" => filters.faces_only = !filters.faces_only,
+        _ => {}
+    }
+}
+
+fn picasa_filter_button_tooltip(label: &str) -> &'static str {
+    match label {
+        "★" => "Afficher uniquement les favoris Picasa",
+        "👤" => "Afficher uniquement les photos avec visages Picasa",
+        _ => "Filtre pas encore implemente",
+    }
 }
 
 fn picasa_filter_status_text(filters: PicasaFilterState) -> &'static str {
-    if filters.starred_only {
-        "Filtre favoris active"
-    } else {
-        "Filtre favoris desactive"
+    match (filters.starred_only, filters.faces_only) {
+        (false, false) => "Filtres Picasa desactives",
+        (true, false) => "Filtre favoris active",
+        (false, true) => "Filtre visages active",
+        (true, true) => "Filtres favoris et visages actifs",
+    }
+}
+
+fn catalog_filters(filters: PicasaFilterState) -> CatalogPhotoFilters {
+    CatalogPhotoFilters {
+        starred_only: filters.starred_only,
+        faces_only: filters.faces_only,
     }
 }
 
@@ -2555,6 +2625,42 @@ mod tests {
     fn photo_status_bar_text_reports_visible_count_without_selection() {
         assert_eq!(photo_status_bar_text(None, 500), "500 photo(s) affichee(s)");
         assert_eq!(photo_status_count_text(500), "500 photos");
+    }
+
+    #[test]
+    fn people_panel_face_labels_prefer_picasa_contact_names() {
+        let labels = people_panel_face_labels(
+            &[
+                PhotoFace {
+                    rect64: "1111".to_owned(),
+                    contact_id: "contact-a".to_owned(),
+                    contact_name: Some("Alice".to_owned()),
+                },
+                PhotoFace {
+                    rect64: "2222".to_owned(),
+                    contact_id: "contact-b".to_owned(),
+                    contact_name: None,
+                },
+            ],
+            2,
+        );
+
+        assert_eq!(
+            labels,
+            vec!["Alice".to_owned(), "Visage 2 (contact-b)".to_owned()]
+        );
+    }
+
+    #[test]
+    fn people_panel_face_labels_keep_existing_count_fallback() {
+        assert_eq!(
+            people_panel_face_labels(&[], 2),
+            vec!["2 visage(s) Picasa".to_owned()]
+        );
+        assert_eq!(
+            people_panel_face_labels(&[], 0),
+            vec!["Aucun visage detecte dans le catalogue".to_owned()]
+        );
     }
 
     #[test]
@@ -3145,23 +3251,71 @@ mod tests {
     }
 
     #[test]
-    fn only_star_filter_is_enabled_for_now() {
+    fn star_and_face_filters_are_enabled_for_now() {
         assert!(picasa_filter_button_enabled("★"));
+        assert!(picasa_filter_button_enabled("👤"));
         assert!(!picasa_filter_button_enabled("↑"));
-        assert!(!picasa_filter_button_enabled("👤"));
+        assert!(!picasa_filter_button_enabled("▦"));
     }
 
     #[test]
-    fn favorite_filter_status_reflects_toggle_state() {
+    fn picasa_filter_status_reflects_toggle_state() {
         assert_eq!(
-            picasa_filter_status_text(PicasaFilterState { starred_only: true }),
+            picasa_filter_status_text(PicasaFilterState {
+                starred_only: true,
+                faces_only: false
+            }),
             "Filtre favoris active"
         );
         assert_eq!(
             picasa_filter_status_text(PicasaFilterState {
-                starred_only: false
+                starred_only: false,
+                faces_only: true
             }),
-            "Filtre favoris desactive"
+            "Filtre visages active"
+        );
+        assert_eq!(
+            picasa_filter_status_text(PicasaFilterState {
+                starred_only: true,
+                faces_only: true
+            }),
+            "Filtres favoris et visages actifs"
+        );
+        assert_eq!(
+            picasa_filter_status_text(PicasaFilterState {
+                starred_only: false,
+                faces_only: false
+            }),
+            "Filtres Picasa desactives"
+        );
+    }
+
+    #[test]
+    fn picasa_filter_selection_and_toggle_are_label_specific() {
+        let mut filters = PicasaFilterState::default();
+        assert!(!picasa_filter_button_selected(filters, "★"));
+        assert!(!picasa_filter_button_selected(filters, "👤"));
+
+        toggle_picasa_filter(&mut filters, "👤");
+        assert!(!picasa_filter_button_selected(filters, "★"));
+        assert!(picasa_filter_button_selected(filters, "👤"));
+
+        toggle_picasa_filter(&mut filters, "★");
+        assert!(picasa_filter_button_selected(filters, "★"));
+        assert!(picasa_filter_button_selected(filters, "👤"));
+    }
+
+    #[test]
+    fn catalog_filter_mapping_preserves_ui_filter_flags() {
+        assert_eq!(
+            catalog_filters(PicasaFilterState {
+                starred_only: true,
+                faces_only: true
+            }),
+            CatalogPhotoFilters {
+                starred_only: true,
+                faces_only: true
+            }
         );
     }
 

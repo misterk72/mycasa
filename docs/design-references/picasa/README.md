@@ -28,11 +28,13 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 ## Etat MyCasa
 - Chrome phototheque Picasa-like : menu, toolbar, sidebar, lightbox, tray bas.
 - Volet Personnes droit minimal pour retrouver la composition Picasa 3 large.
+- Volet Personnes : affichage des noms de visages Picasa importes pour la photo selectionnee.
 - Bande bleue de statut au-dessus du tray bas.
 - Viewer edition : panneau outils gauche, filmstrip haut et canevas gris central.
 - Viewer clair : fond gris Picasa, panneau outils pale et image centrale plus grande.
 - Viewer integre : la vue edition remplace la phototheque au lieu de flotter au-dessus.
 - Phototheque : section Chronologie dans la sidebar et bande Filtres/Search inspiree Picasa 3.
+- Phototheque : les filtres `★` favoris et `👤` visages de la bande Filtres sont fonctionnels et combinables.
 - Phototheque : Chronologie de sidebar en hierarchie annee > mois, pour naviguer comme les regroupements temporels Picasa.
 - Phototheque : header de mois sticky dans la grille chronologique pour garder le contexte pendant les transitions entre mois.
 - Phototheque : suivi du mois visible dans la sidebar Chronologie avec selection automatique annee/mois pendant le scroll.

@@ -1,12 +1,12 @@
 # MyCasa: Sauvegarde Du Plan Et Démarrage
 
 ## Résumé
-Créer le projet natif MyCasa dans `/home/kassabji/workspace/mycasa`, sauvegarder le plan dans `plans/`, puis initialiser une application Rust desktop portable Windows/Linux.
+Créer le projet natif MyCasa, sauvegarder le plan dans `plans/`, puis initialiser une application Rust desktop portable Windows/Linux.
 
 ## Étapes Initiales
-- Créer `/home/kassabji/workspace/mycasa/plans`.
-- Sauvegarder le plan projet dans `/home/kassabji/workspace/mycasa/plans/initial-plan.md`.
-- Initialiser un projet Rust dans `/home/kassabji/workspace/mycasa`.
+- Créer `plans/`.
+- Sauvegarder le plan projet dans `plans/initial-plan.md`.
+- Initialiser un projet Rust dans le dossier racine du dépôt.
 - Configurer une app desktop avec `eframe/egui`, rendu `wgpu`, et une fenêtre principale minimale.
 - Ajouter la structure de base : catalogue, indexeur, miniatures, UI, viewer.
 
@@ -33,6 +33,6 @@ Créer le projet natif MyCasa dans `/home/kassabji/workspace/mycasa`, sauvegarde
 - La structure doit permettre l’ajout incrémental de l’indexation réelle.
 
 ## Hypothèses
-- `/home/kassabji/workspace/mycasa` reste le dossier racine.
+- Le dossier courant du dépôt reste le dossier racine.
 - Le dossier est vide et peut recevoir un nouveau projet.
 - La V1 reste limitée à catalogue + viewer.

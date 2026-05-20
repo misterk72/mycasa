@@ -32,12 +32,13 @@ Exceptions autorisees :
 5. Esthetique Picasa-like : tuiles plus propres, toolbar compacte, et etats visuels de chargement/selection/hover.
 6. Vues phototheque : conserver la vue dossiers/arborescence et enrichir la vue retrochronologique a plat avec des en-tetes de periode plus proches de Picasa.
 7. Import Picasa robuste : parser `contacts.xml`, relier les contacts aux faces `.picasa.ini`, puis exposer les noms dans le viewer.
-8. Catalogue exploitable : ajouter filtres favoris/visages/mots-cles et recherche par metadata Picasa.
+8. Catalogue exploitable : etendre les filtres Picasa restants et exposer les noms de visages/mots-cles dans les panneaux utiles.
 
 Chaque item doit etre implemente par petits increments TDD avec un test rouge avant le code de production.
 
 ## Etat Fonctionnel
-- Le filtre Favoris Picasa (`★`) est actif dans la barre de filtres : il recharge la grille, la pagination continue et la chronologie depuis SQLite avec `picasa_starred = 1`.
+- Les filtres Favoris (`★`) et Visages (`👤`) sont actifs dans la barre de filtres Picasa : ils rechargent la grille, la pagination continue et la chronologie depuis SQLite et peuvent etre combines.
 - Les autres filtres Picasa visibles restent volontairement grises tant que leurs comportements ne sont pas implementes.
+- Le volet Personnes affiche les noms de contacts Picasa importes depuis les visages `.picasa.ini` quand une photo selectionnee en contient.
 - Les modes `Petites vignettes` et `Vignettes normales` sont actifs dans la phototheque et adaptent la grille virtualisee ainsi que les hauteurs de chronologie.
 - La selection phototheque suit le comportement Picasa : clic simple pour selectionner, double-clic ou Entree pour ouvrir, navigation aux fleches avec auto-scroll, et details nom/date/dimensions/taille dans la barre bleue basse.
