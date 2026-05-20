@@ -947,7 +947,9 @@ impl MyCasaApp {
 
     fn ui_folder_grid(&mut self, ui: &mut egui::Ui) {
         let grid_width = library_grid_width(ui.max_rect());
-        let columns = columns_for_width(grid_width, tile_width(self.thumbnail_size_mode));
+        let tile_width = tile_width(self.thumbnail_size_mode);
+        let columns = columns_for_width(grid_width, tile_width);
+        let row_left_padding = centered_grid_left_padding(grid_width, columns, tile_width);
         let total_rows = row_count(self.photos.len(), columns);
         let row_height = photo_row_height(self.thumbnail_size_mode);
         self.update_main_scroll(ui, total_rows as f32 * row_height);
@@ -957,6 +959,7 @@ impl MyCasaApp {
                 .show_rows(ui, row_height, total_rows, |ui, row_range| {
                     for row_index in row_range {
                         ui.horizontal(|ui| {
+                            ui.add_space(row_left_padding);
                             for photo_index in
                                 item_range_for_row(row_index, columns, self.photos.len())
                             {
@@ -978,7 +981,9 @@ impl MyCasaApp {
 
     fn ui_retrochronological_grid(&mut self, ui: &mut egui::Ui) {
         let grid_width = library_grid_width(ui.max_rect());
-        let columns = columns_for_width(grid_width, tile_width(self.thumbnail_size_mode));
+        let tile_width = tile_width(self.thumbnail_size_mode);
+        let columns = columns_for_width(grid_width, tile_width);
+        let row_left_padding = centered_grid_left_padding(grid_width, columns, tile_width);
         let rows = retrochronological_grid_rows(&self.photos, columns);
         let row_layout = chronological_row_layout(&rows, self.thumbnail_size_mode);
         let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
@@ -1010,10 +1015,10 @@ impl MyCasaApp {
                 );
                 match &rows[row_index] {
                     ChronologicalGridRow::Section { label, photos, .. } => {
-                        self.chronology_section_row(ui, row_rect, label, photos);
+                        self.chronology_section_row(ui, row_rect, row_left_padding, label, photos);
                     }
                     ChronologicalGridRow::Photos(photo_indices) => {
-                        self.chronology_photo_row(ui, row_rect, photo_indices);
+                        self.chronology_photo_row(ui, row_rect, row_left_padding, photo_indices);
                     }
                 }
             }
@@ -1090,6 +1095,7 @@ impl MyCasaApp {
         &mut self,
         ui: &mut egui::Ui,
         rect: egui::Rect,
+        row_left_padding: f32,
         label: &str,
         photo_indices: &[usize],
     ) {
@@ -1101,8 +1107,14 @@ impl MyCasaApp {
         draw_chronology_header(ui, header_rect, label);
 
         let photos_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.left(), header_rect.bottom() + TILE_PADDING),
-            Vec2::new(available, tile_height(self.thumbnail_size_mode)),
+            egui::pos2(
+                rect.left() + row_left_padding,
+                header_rect.bottom() + TILE_PADDING,
+            ),
+            Vec2::new(
+                (available - row_left_padding).max(0.0),
+                tile_height(self.thumbnail_size_mode),
+            ),
         );
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -1118,11 +1130,16 @@ impl MyCasaApp {
         &mut self,
         ui: &mut egui::Ui,
         rect: egui::Rect,
+        row_left_padding: f32,
         photo_indices: &[usize],
     ) {
+        let photos_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + row_left_padding, rect.top()),
+            Vec2::new((rect.width() - row_left_padding).max(0.0), rect.height()),
+        );
         ui.scope_builder(
             egui::UiBuilder::new()
-                .max_rect(rect)
+                .max_rect(photos_rect)
                 .layout(Layout::left_to_right(Align::Min)),
             |ui| {
                 self.render_chronology_photos(ui, photo_indices);
@@ -1431,6 +1448,11 @@ impl MyCasaApp {
 
 pub fn library_grid_width(panel_rect: egui::Rect) -> f32 {
     panel_rect.width()
+}
+
+fn centered_grid_left_padding(available_width: f32, columns: usize, tile_width: f32) -> f32 {
+    let used_width = columns.max(1) as f32 * tile_width;
+    ((available_width - used_width) / 2.0).max(0.0)
 }
 
 impl InertialScrollState {
@@ -2050,6 +2072,16 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1460.0, 900.0));
 
         assert_eq!(library_grid_width(rect), 1460.0);
+    }
+
+    #[test]
+    fn centered_grid_left_padding_splits_unused_grid_width() {
+        assert_eq!(centered_grid_left_padding(1000.0, 6, 150.0), 50.0);
+    }
+
+    #[test]
+    fn centered_grid_left_padding_never_goes_negative() {
+        assert_eq!(centered_grid_left_padding(300.0, 3, 150.0), 0.0);
     }
 
     #[test]
