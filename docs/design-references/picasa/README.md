@@ -43,3 +43,4 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - Phototheque : les cadres de vignettes suivent le ratio reel de l'image affichee, notamment un cadre vertical serre pour les photos portrait.
 - Phototheque : la touche Entree ouvre en viewer la photo selectionnee, les ombres de vignettes sont peintes autour du cadre reel de l'image, et la selection utilise un double contour serre plutot qu'un fond de cellule bleu.
 - Phototheque : la navigation clavier aux fleches maintient la vignette selectionnee visible en ajustant le scroll principal.
+- Phototheque : la bande bleue basse suit davantage Picasa en affichant nom, date, dimensions et taille de la photo selectionnee, avec les compteurs techniques seulement au survol.

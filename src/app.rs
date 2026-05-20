@@ -1468,14 +1468,12 @@ impl MyCasaApp {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, Color32::from_rgb(238, 240, 242));
         ui.vertical(|ui| {
-            let detail_text = self
+            let selected_photo = self
                 .selected_photo
-                .and_then(|photo_id| self.photos.iter().find(|photo| photo.id == photo_id))
-                .map(selected_photo_detail_text)
-                .unwrap_or_else(|| "Aucune photo selectionnee".to_owned());
+                .and_then(|photo_id| self.photos.iter().find(|photo| photo.id == photo_id));
+            let detail_text = photo_status_bar_text(selected_photo, self.photos.len());
             let metrics_text = format!(
-                "{} photos | win:{}-{} | cache:{} gen:{} pending:{} active:{} fps:{:.0}",
-                self.photos.len(),
+                "win:{}-{} | cache:{} gen:{} pending:{} active:{} fps:{:.0}",
                 self.photo_window_start + 1,
                 self.photo_window_start + self.photos.len(),
                 metrics.cache_hits,
@@ -1484,12 +1482,12 @@ impl MyCasaApp {
                 metrics.active_loads,
                 self.displayed_fps
             );
-            let (detail_rect, _) =
+            let (detail_rect, detail_response) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
             ui.painter().rect_filled(detail_rect, 0.0, PICASA_BLUE);
             ui.painter().text(
-                detail_rect.left_center() + Vec2::new(10.0, 0.0),
-                egui::Align2::LEFT_CENTER,
+                detail_rect.center(),
+                egui::Align2::CENTER_CENTER,
                 detail_text,
                 egui::TextStyle::Small.resolve(ui.style()),
                 Color32::WHITE,
@@ -1497,10 +1495,11 @@ impl MyCasaApp {
             ui.painter().text(
                 detail_rect.right_center() - Vec2::new(10.0, 0.0),
                 egui::Align2::RIGHT_CENTER,
-                metrics_text,
+                photo_status_count_text(self.photos.len()),
                 egui::TextStyle::Small.resolve(ui.style()),
                 Color32::from_rgb(232, 245, 252),
             );
+            detail_response.on_hover_text(metrics_text);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&self.status).color(Color32::from_gray(85)));
@@ -1683,21 +1682,46 @@ fn selected_photo_to_open(photos: &[Photo], selected_photo: Option<i64>) -> Opti
         .then_some(selected_photo)
 }
 
-fn selected_photo_detail_text(photo: &Photo) -> String {
+fn photo_status_bar_text(selected_photo: Option<&Photo>, visible_photo_count: usize) -> String {
+    selected_photo.map_or_else(
+        || format!("{visible_photo_count} photo(s) affichee(s)"),
+        selected_photo_status_text,
+    )
+}
+
+fn selected_photo_status_text(photo: &Photo) -> String {
     let name = photo
         .path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("photo");
+    let name = middle_truncate(name, 42);
+    let date = photo_status_date_text(photo).unwrap_or_else(|| "date inconnue".to_owned());
     let dimensions = match (photo.width, photo.height) {
-        (Some(width), Some(height)) => format!("{width} x {height}"),
+        (Some(width), Some(height)) => format!("{width}x{height} pixels"),
         _ => "dimensions inconnues".to_owned(),
     };
     let size = photo
         .file_size
         .map(format_file_size)
         .unwrap_or_else(|| "taille inconnue".to_owned());
-    format!("{name}    {dimensions}    {size}")
+    format!("{name}    {date}    {dimensions}    {size}")
+}
+
+fn photo_status_count_text(visible_photo_count: usize) -> String {
+    format!("{visible_photo_count} photos")
+}
+
+fn photo_status_date_text(photo: &Photo) -> Option<String> {
+    let timestamp = photo_time_key(photo);
+    if timestamp <= 0 {
+        return None;
+    }
+
+    match Utc.timestamp_opt(timestamp, 0) {
+        LocalResult::Single(datetime) => Some(datetime.format("%d/%m/%Y %H:%M:%S").to_string()),
+        _ => None,
+    }
 }
 
 fn format_file_size(bytes: u64) -> String {
@@ -2513,17 +2537,24 @@ mod tests {
     }
 
     #[test]
-    fn selected_photo_detail_text_includes_name_dimensions_and_size() {
+    fn selected_photo_status_text_matches_picasa_like_blue_bar() {
         let mut photo = photo_for_test(7);
         photo.path = PathBuf::from("/tmp/IMG-0007.jpg");
         photo.width = Some(4032);
         photo.height = Some(2268);
         photo.file_size = Some(5_242_880);
+        photo.captured_at = Some("2026-05-20T14:30:45Z".to_owned());
 
         assert_eq!(
-            selected_photo_detail_text(&photo),
-            "IMG-0007.jpg    4032 x 2268    5.0 Mo"
+            selected_photo_status_text(&photo),
+            "IMG-0007.jpg    20/05/2026 14:30:45    4032x2268 pixels    5.0 Mo"
         );
+    }
+
+    #[test]
+    fn photo_status_bar_text_reports_visible_count_without_selection() {
+        assert_eq!(photo_status_bar_text(None, 500), "500 photo(s) affichee(s)");
+        assert_eq!(photo_status_count_text(500), "500 photos");
     }
 
     #[test]
