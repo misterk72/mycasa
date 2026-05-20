@@ -25,8 +25,11 @@ use crate::ui_text::middle_truncate;
 use crate::viewer::{NavigationDirection, ViewerNavigationRequest, ViewerState, adjacent_photo_id};
 
 const THUMBNAIL_SIZE: f32 = 132.0;
+const SMALL_THUMBNAIL_SIZE: f32 = 92.0;
 const TILE_PADDING: f32 = 8.0;
+#[cfg(test)]
 const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
+#[cfg(test)]
 const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
 const TOP_CHROME_HEIGHT: f32 = 86.0;
@@ -54,6 +57,13 @@ const CHROME_BORDER: Color32 = Color32::from_rgb(176, 182, 188);
 enum LibraryViewMode {
     FolderTree,
     RetroChronological,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ThumbnailSizeMode {
+    Small,
+    #[default]
+    Normal,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -119,6 +129,7 @@ pub struct MyCasaApp {
     active_chronology_section: Option<ChronologySectionKey>,
     pending_chronology_scroll: Option<ChronologySectionKey>,
     sidebar_auto_scroll_target: Option<ChronologySectionKey>,
+    thumbnail_size_mode: ThumbnailSizeMode,
     main_scroll: InertialScrollState,
     viewer_wheel_navigation: ViewerWheelNavigationState,
     status: String,
@@ -183,6 +194,7 @@ impl MyCasaApp {
             active_chronology_section: None,
             pending_chronology_scroll: None,
             sidebar_auto_scroll_target: None,
+            thumbnail_size_mode: ThumbnailSizeMode::Normal,
             main_scroll: InertialScrollState::default(),
             viewer_wheel_navigation: ViewerWheelNavigationState::default(),
             status,
@@ -293,9 +305,14 @@ impl MyCasaApp {
         }
 
         let scroll_delta = if chronological {
-            chronological_removed_prefix_height(&self.photos, evict_count, columns)
+            chronological_removed_prefix_height(
+                &self.photos,
+                evict_count,
+                columns,
+                self.thumbnail_size_mode,
+            )
         } else {
-            folder_removed_prefix_height(evict_count, columns)
+            folder_removed_prefix_height(evict_count, columns, self.thumbnail_size_mode)
         };
         self.photos.drain(..evict_count);
         self.photo_window_start += evict_count;
@@ -325,9 +342,18 @@ impl MyCasaApp {
                     }
 
                     let scroll_delta = if chronological {
-                        chronological_prepended_prefix_height(&photos, &self.photos, columns)
+                        chronological_prepended_prefix_height(
+                            &photos,
+                            &self.photos,
+                            columns,
+                            self.thumbnail_size_mode,
+                        )
                     } else {
-                        folder_removed_prefix_height(photos.len(), columns)
+                        folder_removed_prefix_height(
+                            photos.len(),
+                            columns,
+                            self.thumbnail_size_mode,
+                        )
                     };
                     let prepended = photos.len();
                     photos.append(&mut self.photos);
@@ -874,12 +900,30 @@ impl MyCasaApp {
                 self.library_view_mode = LibraryViewMode::RetroChronological;
             }
             ui.separator();
-            ui.label(RichText::new("Petites vignettes").color(Color32::from_gray(100)));
-            ui.label(
-                RichText::new("Vignettes normales")
-                    .strong()
-                    .color(PICASA_BLUE),
-            );
+            if ui
+                .selectable_label(
+                    self.thumbnail_size_mode == ThumbnailSizeMode::Small,
+                    "Petites vignettes",
+                )
+                .clicked()
+            {
+                self.thumbnail_size_mode = ThumbnailSizeMode::Small;
+                self.main_scroll.offset = 0.0;
+                self.main_scroll.velocity = 0.0;
+                self.status = thumbnail_mode_status_text(self.thumbnail_size_mode).to_owned();
+            }
+            if ui
+                .selectable_label(
+                    self.thumbnail_size_mode == ThumbnailSizeMode::Normal,
+                    RichText::new("Vignettes normales").color(PICASA_BLUE),
+                )
+                .clicked()
+            {
+                self.thumbnail_size_mode = ThumbnailSizeMode::Normal;
+                self.main_scroll.offset = 0.0;
+                self.main_scroll.velocity = 0.0;
+                self.status = thumbnail_mode_status_text(self.thumbnail_size_mode).to_owned();
+            }
             ui.label(RichText::new("Centre de retouche").color(Color32::from_gray(100)));
             if ui.button("Actualiser").clicked() {
                 self.refresh_photos();
@@ -903,26 +947,25 @@ impl MyCasaApp {
 
     fn ui_folder_grid(&mut self, ui: &mut egui::Ui) {
         let grid_width = library_grid_width(ui.max_rect());
-        let columns = columns_for_width(grid_width, TILE_WIDTH);
+        let columns = columns_for_width(grid_width, tile_width(self.thumbnail_size_mode));
         let total_rows = row_count(self.photos.len(), columns);
-        self.update_main_scroll(ui, total_rows as f32 * (TILE_HEIGHT + TILE_PADDING));
+        let row_height = photo_row_height(self.thumbnail_size_mode);
+        self.update_main_scroll(ui, total_rows as f32 * row_height);
 
-        let output = self.main_scroll_area().show_rows(
-            ui,
-            TILE_HEIGHT + TILE_PADDING,
-            total_rows,
-            |ui, row_range| {
-                for row_index in row_range {
-                    ui.horizontal(|ui| {
-                        for photo_index in item_range_for_row(row_index, columns, self.photos.len())
-                        {
-                            let photo = self.photos[photo_index].clone();
-                            self.photo_tile(ui, &photo);
-                        }
-                    });
-                }
-            },
-        );
+        let output =
+            self.main_scroll_area()
+                .show_rows(ui, row_height, total_rows, |ui, row_range| {
+                    for row_index in row_range {
+                        ui.horizontal(|ui| {
+                            for photo_index in
+                                item_range_for_row(row_index, columns, self.photos.len())
+                            {
+                                let photo = self.photos[photo_index].clone();
+                                self.photo_tile(ui, &photo);
+                            }
+                        });
+                    }
+                });
         self.sync_main_scroll_from_output(
             ui,
             output.state.offset.y,
@@ -935,9 +978,9 @@ impl MyCasaApp {
 
     fn ui_retrochronological_grid(&mut self, ui: &mut egui::Ui) {
         let grid_width = library_grid_width(ui.max_rect());
-        let columns = columns_for_width(grid_width, TILE_WIDTH);
+        let columns = columns_for_width(grid_width, tile_width(self.thumbnail_size_mode));
         let rows = retrochronological_grid_rows(&self.photos, columns);
-        let row_layout = chronological_row_layout(&rows);
+        let row_layout = chronological_row_layout(&rows, self.thumbnail_size_mode);
         let total_height = row_layout.last().map(|(_, bottom)| *bottom).unwrap_or(0.0);
         self.update_main_scroll(ui, total_height);
         if let Some(target) = self.pending_chronology_scroll.take() {
@@ -1059,7 +1102,7 @@ impl MyCasaApp {
 
         let photos_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left(), header_rect.bottom() + TILE_PADDING),
-            Vec2::new(available, TILE_HEIGHT),
+            Vec2::new(available, tile_height(self.thumbnail_size_mode)),
         );
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -1199,7 +1242,11 @@ impl MyCasaApp {
 
     fn photo_tile(&mut self, ui: &mut egui::Ui, photo: &Photo) {
         let selected = self.selected_photo == Some(photo.id);
-        let desired_size = Vec2::new(THUMBNAIL_SIZE + TILE_PADDING, TILE_HEIGHT);
+        let thumbnail_size = thumbnail_size(self.thumbnail_size_mode);
+        let desired_size = Vec2::new(
+            thumbnail_size + TILE_PADDING,
+            tile_height(self.thumbnail_size_mode),
+        );
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
 
         if response.clicked() {
@@ -1234,7 +1281,7 @@ impl MyCasaApp {
 
         let thumb_rect = egui::Rect::from_min_size(
             rect.min + Vec2::new(TILE_PADDING, TILE_PADDING),
-            Vec2::splat(THUMBNAIL_SIZE - TILE_PADDING),
+            Vec2::splat(thumbnail_size - TILE_PADDING),
         );
 
         match self.thumbnails.state_for(ui.ctx(), photo) {
@@ -1582,26 +1629,29 @@ fn push_photo_rows(
     photo_indices.clear();
 }
 
-fn chrono_section_row_height() -> f32 {
-    CHRONO_SECTION_HEIGHT + TILE_PADDING + TILE_HEIGHT
+fn chrono_section_row_height(mode: ThumbnailSizeMode) -> f32 {
+    CHRONO_SECTION_HEIGHT + photo_row_height(mode)
 }
 
-fn chrono_photo_row_height() -> f32 {
-    TILE_HEIGHT + TILE_PADDING
+fn chrono_photo_row_height(mode: ThumbnailSizeMode) -> f32 {
+    photo_row_height(mode)
 }
 
-fn chronological_row_height(row: &ChronologicalGridRow) -> f32 {
+fn chronological_row_height(row: &ChronologicalGridRow, mode: ThumbnailSizeMode) -> f32 {
     match row {
-        ChronologicalGridRow::Section { .. } => chrono_section_row_height(),
-        ChronologicalGridRow::Photos(_) => chrono_photo_row_height(),
+        ChronologicalGridRow::Section { .. } => chrono_section_row_height(mode),
+        ChronologicalGridRow::Photos(_) => chrono_photo_row_height(mode),
     }
 }
 
-fn chronological_row_layout(rows: &[ChronologicalGridRow]) -> Vec<(f32, f32)> {
+fn chronological_row_layout(
+    rows: &[ChronologicalGridRow],
+    mode: ThumbnailSizeMode,
+) -> Vec<(f32, f32)> {
     let mut top = 0.0;
     rows.iter()
         .map(|row| {
-            let bottom = top + chronological_row_height(row);
+            let bottom = top + chronological_row_height(row, mode);
             let bounds = (top, bottom);
             top = bottom;
             bounds
@@ -1666,19 +1716,24 @@ fn sidebar_auto_scroll_action(
     }
 }
 
-fn folder_removed_prefix_height(removed_photos: usize, columns: usize) -> f32 {
+fn folder_removed_prefix_height(
+    removed_photos: usize,
+    columns: usize,
+    mode: ThumbnailSizeMode,
+) -> f32 {
     let removed_rows = row_count(removed_photos, columns.max(1));
-    removed_rows as f32 * (TILE_HEIGHT + TILE_PADDING)
+    removed_rows as f32 * photo_row_height(mode)
 }
 
 fn chronological_removed_prefix_height(
     photos: &[Photo],
     removed_photos: usize,
     columns: usize,
+    mode: ThumbnailSizeMode,
 ) -> f32 {
     let prefix_len = removed_photos.min(photos.len());
     let rows = retrochronological_grid_rows(&photos[..prefix_len], columns);
-    chronological_row_layout(&rows)
+    chronological_row_layout(&rows, mode)
         .last()
         .map(|(_, bottom)| *bottom)
         .unwrap_or(0.0)
@@ -1688,17 +1743,19 @@ fn chronological_prepended_prefix_height(
     prepended: &[Photo],
     existing: &[Photo],
     columns: usize,
+    mode: ThumbnailSizeMode,
 ) -> f32 {
     let mut combined = Vec::with_capacity(prepended.len() + existing.len());
     combined.extend_from_slice(prepended);
     combined.extend_from_slice(existing);
 
-    chronological_total_height(&combined, columns) - chronological_total_height(existing, columns)
+    chronological_total_height(&combined, columns, mode)
+        - chronological_total_height(existing, columns, mode)
 }
 
-fn chronological_total_height(photos: &[Photo], columns: usize) -> f32 {
+fn chronological_total_height(photos: &[Photo], columns: usize, mode: ThumbnailSizeMode) -> f32 {
     let rows = retrochronological_grid_rows(photos, columns);
-    chronological_row_layout(&rows)
+    chronological_row_layout(&rows, mode)
         .last()
         .map(|(_, bottom)| *bottom)
         .unwrap_or(0.0)
@@ -1827,6 +1884,32 @@ fn picasa_filter_status_text(filters: PicasaFilterState) -> &'static str {
         "Filtre favoris active"
     } else {
         "Filtre favoris desactive"
+    }
+}
+
+fn thumbnail_size(mode: ThumbnailSizeMode) -> f32 {
+    match mode {
+        ThumbnailSizeMode::Small => SMALL_THUMBNAIL_SIZE,
+        ThumbnailSizeMode::Normal => THUMBNAIL_SIZE,
+    }
+}
+
+fn tile_width(mode: ThumbnailSizeMode) -> f32 {
+    thumbnail_size(mode) + TILE_PADDING * 2.0
+}
+
+fn tile_height(mode: ThumbnailSizeMode) -> f32 {
+    thumbnail_size(mode) + 28.0
+}
+
+fn photo_row_height(mode: ThumbnailSizeMode) -> f32 {
+    tile_height(mode) + TILE_PADDING
+}
+
+fn thumbnail_mode_status_text(mode: ThumbnailSizeMode) -> &'static str {
+    match mode {
+        ThumbnailSizeMode::Small => "Petites vignettes",
+        ThumbnailSizeMode::Normal => "Vignettes normales",
     }
 }
 
@@ -2311,17 +2394,24 @@ mod tests {
             ChronologicalGridRow::Photos(vec![2, 3]),
         ];
 
-        let layout = chronological_row_layout(&rows);
+        let layout = chronological_row_layout(&rows, ThumbnailSizeMode::Normal);
 
-        assert_eq!(layout[0], (0.0, chrono_section_row_height()));
+        assert_eq!(
+            layout[0],
+            (0.0, chrono_section_row_height(ThumbnailSizeMode::Normal))
+        );
         assert_eq!(
             layout[1],
             (
-                chrono_section_row_height(),
-                chrono_section_row_height() + chrono_photo_row_height()
+                chrono_section_row_height(ThumbnailSizeMode::Normal),
+                chrono_section_row_height(ThumbnailSizeMode::Normal)
+                    + chrono_photo_row_height(ThumbnailSizeMode::Normal)
             )
         );
-        assert!(chrono_section_row_height() < (TILE_HEIGHT + TILE_PADDING) * 2.0);
+        assert!(
+            chrono_section_row_height(ThumbnailSizeMode::Normal)
+                < (TILE_HEIGHT + TILE_PADDING) * 2.0
+        );
     }
 
     #[test]
@@ -2345,7 +2435,7 @@ mod tests {
                 photos: vec![4, 5],
             },
         ];
-        let layout = chronological_row_layout(&rows);
+        let layout = chronological_row_layout(&rows, ThumbnailSizeMode::Normal);
 
         assert_eq!(
             chronological_sticky_section(&rows, &layout, layout[1].0 + 8.0),
@@ -2390,7 +2480,7 @@ mod tests {
                 photos: vec![4, 5],
             },
         ];
-        let layout = chronological_row_layout(&rows);
+        let layout = chronological_row_layout(&rows, ThumbnailSizeMode::Normal);
 
         assert_eq!(
             chronological_section_offset(
@@ -2453,7 +2543,7 @@ mod tests {
     #[test]
     fn removed_folder_prefix_height_preserves_scroll_position_after_eviction() {
         assert_eq!(
-            folder_removed_prefix_height(10, 4),
+            folder_removed_prefix_height(10, 4, ThumbnailSizeMode::Normal),
             3.0 * (TILE_HEIGHT + TILE_PADDING)
         );
     }
@@ -2470,8 +2560,8 @@ mod tests {
         let photos = vec![april_1, april_2, march];
 
         assert_eq!(
-            chronological_removed_prefix_height(&photos, 2, 2),
-            chrono_section_row_height()
+            chronological_removed_prefix_height(&photos, 2, 2, ThumbnailSizeMode::Normal),
+            chrono_section_row_height(ThumbnailSizeMode::Normal)
         );
     }
 
@@ -2488,8 +2578,13 @@ mod tests {
         let existing = vec![existing_april_1, existing_april_2];
 
         assert_eq!(
-            chronological_prepended_prefix_height(&prepended, &existing, 2),
-            chrono_photo_row_height()
+            chronological_prepended_prefix_height(
+                &prepended,
+                &existing,
+                2,
+                ThumbnailSizeMode::Normal
+            ),
+            chrono_photo_row_height(ThumbnailSizeMode::Normal)
         );
     }
 
@@ -2562,6 +2657,30 @@ mod tests {
                 starred_only: false
             }),
             "Filtre favoris desactive"
+        );
+    }
+
+    #[test]
+    fn thumbnail_size_modes_keep_normal_layout_and_add_compact_layout() {
+        assert_eq!(thumbnail_size(ThumbnailSizeMode::Normal), THUMBNAIL_SIZE);
+        assert_eq!(tile_width(ThumbnailSizeMode::Normal), TILE_WIDTH);
+        assert_eq!(tile_height(ThumbnailSizeMode::Normal), TILE_HEIGHT);
+        assert!(tile_width(ThumbnailSizeMode::Small) < tile_width(ThumbnailSizeMode::Normal));
+        assert!(
+            photo_row_height(ThumbnailSizeMode::Small)
+                < photo_row_height(ThumbnailSizeMode::Normal)
+        );
+    }
+
+    #[test]
+    fn thumbnail_mode_status_text_names_selected_mode() {
+        assert_eq!(
+            thumbnail_mode_status_text(ThumbnailSizeMode::Small),
+            "Petites vignettes"
+        );
+        assert_eq!(
+            thumbnail_mode_status_text(ThumbnailSizeMode::Normal),
+            "Vignettes normales"
         );
     }
 

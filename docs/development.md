@@ -39,3 +39,4 @@ Chaque item doit etre implemente par petits increments TDD avec un test rouge av
 ## Etat Fonctionnel
 - Le filtre Favoris Picasa (`★`) est actif dans la barre de filtres : il recharge la grille, la pagination continue et la chronologie depuis SQLite avec `picasa_starred = 1`.
 - Les autres filtres Picasa visibles restent volontairement grises tant que leurs comportements ne sont pas implementes.
+- Les modes `Petites vignettes` et `Vignettes normales` sont actifs dans la phototheque et adaptent la grille virtualisee ainsi que les hauteurs de chronologie.
