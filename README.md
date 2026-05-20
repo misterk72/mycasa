@@ -46,6 +46,39 @@ sudo apt-get install -y \
   pkg-config
 ```
 
+## Install From A GitHub Release
+
+Release builds are published from version tags named `X.Y.Z` or `vX.Y.Z`, for example `1.1.0`.
+
+1. Open the repository Releases page on GitHub.
+2. Download the archive for your platform:
+   - `mycasa-linux-x86_64.tar.gz`
+   - `mycasa-windows-x86_64.zip`
+3. Extract the archive.
+4. Run the executable inside the extracted folder:
+   - Linux: `./mycasa`
+   - Windows: `mycasa.exe`
+
+Linux may require the same runtime libraries as the development build, notably graphics stack libraries and `libheif`. On Ubuntu, install the packages listed above if the binary does not start.
+
+Windows archives include the executable and the native DLLs collected from the CI vcpkg install. The app is portable for now: there is no installer, Start Menu shortcut, or file association.
+
+## Publish A Release
+
+The GitHub Actions workflow builds Linux and Windows release archives on every push. It creates a downloadable GitHub Release only when a version tag is pushed.
+
+```bash
+git tag 1.1.0
+git push origin 1.1.0
+```
+
+After the workflow finishes, GitHub will create `MyCasa 1.1.0` and attach:
+
+- `mycasa-linux-x86_64.tar.gz`
+- `mycasa-windows-x86_64.zip`
+
+For a replacement build of the same version, delete the GitHub Release and tag first, then push a corrected tag. Prefer creating a new patch tag such as `1.1.1` once a release has been shared.
+
 ## Build And Run
 
 ```bash

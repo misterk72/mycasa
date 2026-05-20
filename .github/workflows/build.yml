@@ -5,11 +5,17 @@ on:
     branches:
       - main
       - master
+    tags:
+      - "v*"
+      - "[0-9]*"
   pull_request:
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -90,3 +96,27 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.archive }}
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: release-assets
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" \
+            release-assets/mycasa-linux-x86_64/mycasa-linux-x86_64.tar.gz \
+            release-assets/mycasa-windows-x86_64/mycasa-windows-x86_64.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "MyCasa $TAG_NAME" \
+            --generate-notes
