@@ -38,3 +38,4 @@ Ces captures servent de references internes pour rapprocher MyCasa de l'esthetiq
 - Phototheque : suivi du mois visible dans la sidebar Chronologie avec selection automatique annee/mois pendant le scroll.
 - Phototheque : clic sur un mois de la sidebar Chronologie positionne la grille principale sur le mois correspondant.
 - Phototheque : actions de collection sous le titre et tray bas a boutons fixes plus proche Picasa 3.
+- Phototheque : grille recentree et tuiles plus rectangulaires avec ombre legere, pour se rapprocher de la densite de `11-library-flat-chronological-reference.png`.

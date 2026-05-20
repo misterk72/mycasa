@@ -24,13 +24,16 @@ use crate::thumbnails::{ThumbnailCache, ThumbnailState};
 use crate::ui_text::middle_truncate;
 use crate::viewer::{NavigationDirection, ViewerNavigationRequest, ViewerState, adjacent_photo_id};
 
-const THUMBNAIL_SIZE: f32 = 132.0;
-const SMALL_THUMBNAIL_SIZE: f32 = 92.0;
+const THUMBNAIL_WIDTH: f32 = 160.0;
+const THUMBNAIL_HEIGHT: f32 = 106.0;
+const SMALL_THUMBNAIL_WIDTH: f32 = 118.0;
+const SMALL_THUMBNAIL_HEIGHT: f32 = 78.0;
 const TILE_PADDING: f32 = 8.0;
+const TILE_LABEL_HEIGHT: f32 = 24.0;
 #[cfg(test)]
-const TILE_WIDTH: f32 = THUMBNAIL_SIZE + TILE_PADDING * 2.0;
+const TILE_WIDTH: f32 = THUMBNAIL_WIDTH + TILE_PADDING * 2.0;
 #[cfg(test)]
-const TILE_HEIGHT: f32 = THUMBNAIL_SIZE + 28.0;
+const TILE_HEIGHT: f32 = THUMBNAIL_HEIGHT + TILE_LABEL_HEIGHT;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
 const TOP_CHROME_HEIGHT: f32 = 86.0;
 const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 0.9;
@@ -1261,7 +1264,7 @@ impl MyCasaApp {
         let selected = self.selected_photo == Some(photo.id);
         let thumbnail_size = thumbnail_size(self.thumbnail_size_mode);
         let desired_size = Vec2::new(
-            thumbnail_size + TILE_PADDING,
+            tile_width(self.thumbnail_size_mode),
             tile_height(self.thumbnail_size_mode),
         );
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
@@ -1271,35 +1274,21 @@ impl MyCasaApp {
             self.viewer.open(photo.clone());
         }
 
-        let fill = if selected {
-            Color32::from_rgb(232, 242, 255)
-        } else if response.hovered() {
-            Color32::from_rgb(248, 252, 255)
-        } else {
-            Color32::WHITE
-        };
-
-        let shadow_rect = rect.translate(Vec2::new(1.5, 1.5));
-        ui.painter().rect_filled(shadow_rect, 1.0, TILE_SHADOW);
-        ui.painter().rect_filled(rect, 1.0, fill);
-        ui.painter().rect_stroke(
-            rect,
-            1.0,
-            Stroke::new(
-                if selected { 2.0 } else { 1.0 },
-                if selected {
-                    PICASA_BLUE
-                } else {
-                    Color32::from_rgb(204, 204, 204)
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
+        if selected || response.hovered() {
+            let fill = if selected {
+                Color32::from_rgb(230, 242, 255)
+            } else {
+                Color32::from_rgb(246, 250, 255)
+            };
+            ui.painter().rect_filled(rect.shrink(1.0), 2.0, fill);
+        }
 
         let thumb_rect = egui::Rect::from_min_size(
             rect.min + Vec2::new(TILE_PADDING, TILE_PADDING),
-            Vec2::splat(thumbnail_size - TILE_PADDING),
+            thumbnail_size,
         );
+        let shadow_rect = thumb_rect.translate(Vec2::new(2.0, 2.0));
+        ui.painter().rect_filled(shadow_rect, 1.0, TILE_SHADOW);
 
         match self.thumbnails.state_for(ui.ctx(), photo) {
             ThumbnailState::Pending => {
@@ -1341,15 +1330,31 @@ impl MyCasaApp {
                 );
             }
         }
+        ui.painter().rect_stroke(
+            thumb_rect,
+            1.0,
+            Stroke::new(
+                if selected { 2.0 } else { 1.0 },
+                if selected {
+                    PICASA_BLUE
+                } else {
+                    Color32::from_rgb(214, 214, 210)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
 
         let name = photo
             .path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("photo");
-        let label = crate::ui_text::middle_truncate(name, 22);
+        let label = crate::ui_text::middle_truncate(name, thumbnail_label_limit(thumbnail_size.x));
         ui.painter().text(
-            rect.center_bottom() - Vec2::new(0.0, 11.0),
+            egui::pos2(
+                rect.center().x,
+                thumb_rect.bottom() + TILE_LABEL_HEIGHT * 0.55,
+            ),
             egui::Align2::CENTER_CENTER,
             label,
             egui::TextStyle::Small.resolve(ui.style()),
@@ -1909,23 +1914,27 @@ fn picasa_filter_status_text(filters: PicasaFilterState) -> &'static str {
     }
 }
 
-fn thumbnail_size(mode: ThumbnailSizeMode) -> f32 {
+fn thumbnail_size(mode: ThumbnailSizeMode) -> Vec2 {
     match mode {
-        ThumbnailSizeMode::Small => SMALL_THUMBNAIL_SIZE,
-        ThumbnailSizeMode::Normal => THUMBNAIL_SIZE,
+        ThumbnailSizeMode::Small => Vec2::new(SMALL_THUMBNAIL_WIDTH, SMALL_THUMBNAIL_HEIGHT),
+        ThumbnailSizeMode::Normal => Vec2::new(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT),
     }
 }
 
 fn tile_width(mode: ThumbnailSizeMode) -> f32 {
-    thumbnail_size(mode) + TILE_PADDING * 2.0
+    thumbnail_size(mode).x + TILE_PADDING * 2.0
 }
 
 fn tile_height(mode: ThumbnailSizeMode) -> f32 {
-    thumbnail_size(mode) + 28.0
+    thumbnail_size(mode).y + TILE_LABEL_HEIGHT
 }
 
 fn photo_row_height(mode: ThumbnailSizeMode) -> f32 {
     tile_height(mode) + TILE_PADDING
+}
+
+fn thumbnail_label_limit(thumbnail_width: f32) -> usize {
+    (thumbnail_width / 7.0).round().clamp(14.0, 28.0) as usize
 }
 
 fn thumbnail_mode_status_text(mode: ThumbnailSizeMode) -> &'static str {
@@ -2694,7 +2703,10 @@ mod tests {
 
     #[test]
     fn thumbnail_size_modes_keep_normal_layout_and_add_compact_layout() {
-        assert_eq!(thumbnail_size(ThumbnailSizeMode::Normal), THUMBNAIL_SIZE);
+        assert_eq!(
+            thumbnail_size(ThumbnailSizeMode::Normal),
+            Vec2::new(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT)
+        );
         assert_eq!(tile_width(ThumbnailSizeMode::Normal), TILE_WIDTH);
         assert_eq!(tile_height(ThumbnailSizeMode::Normal), TILE_HEIGHT);
         assert!(tile_width(ThumbnailSizeMode::Small) < tile_width(ThumbnailSizeMode::Normal));
@@ -2702,6 +2714,13 @@ mod tests {
             photo_row_height(ThumbnailSizeMode::Small)
                 < photo_row_height(ThumbnailSizeMode::Normal)
         );
+    }
+
+    #[test]
+    fn thumbnail_label_limit_scales_with_reference_tile_width() {
+        assert_eq!(thumbnail_label_limit(80.0), 14);
+        assert!(thumbnail_label_limit(160.0) > thumbnail_label_limit(118.0));
+        assert_eq!(thumbnail_label_limit(400.0), 28);
     }
 
     #[test]
