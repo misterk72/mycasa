@@ -98,6 +98,20 @@ Decode profiling can be run without opening the UI:
 cargo run -- --profile-decode --limit 12 /path/to/photos
 ```
 
+## Linux Desktop Integration (Cinnamon)
+
+The app includes a window icon. To also add MyCasa to the application menu and
+associate pinned panel launchers with its window, run from the checkout:
+
+```bash
+cargo build --release
+python3 scripts/install-desktop.py
+```
+
+The launcher points to `target/release/mycasa`; keep this checkout in place.
+You can pass another executable path to the installer as its first argument.
+Restart MyCasa after rebuilding, then right-click its Cinnamon panel icon to pin it.
+
 ## Data And Privacy
 
 MyCasa stores its catalog and generated caches locally in the user profile. Original photos remain where they are and are not copied into the catalog. The current Picasa integration reads compatible files but does not automatically write `.picasa.ini` files.

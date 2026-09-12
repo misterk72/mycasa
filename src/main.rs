@@ -37,6 +37,8 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title("MyCasa")
+            .with_app_id("mycasa")
+            .with_icon(application_icon())
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
@@ -49,6 +51,32 @@ fn main() -> eframe::Result {
     )
 }
 
+fn application_icon() -> egui::IconData {
+    let image = image::load_from_memory_with_format(
+        include_bytes!("../assets/mycasa.png"),
+        image::ImageFormat::Png,
+    )
+    .expect("bundled MyCasa icon must be a valid PNG")
+    .thumbnail(256, 256)
+    .into_rgba8();
+    egui::IconData {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    }
+}
+
 fn register_extra_image_decoders() {
     libheif_rs::integration::image::register_all_decoding_hooks();
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    #[test]
+    fn bundled_icon_is_valid_rgba() {
+        let icon = super::application_icon();
+        assert_eq!([icon.width, icon.height], [256, 256]);
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        assert!(icon.rgba.chunks_exact(4).any(|pixel| pixel[3] == 255));
+    }
 }
