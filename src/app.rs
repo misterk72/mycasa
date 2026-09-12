@@ -35,7 +35,7 @@ const TILE_WIDTH: f32 = THUMBNAIL_WIDTH + TILE_PADDING * 2.0;
 #[cfg(test)]
 const TILE_HEIGHT: f32 = THUMBNAIL_HEIGHT + TILE_LABEL_HEIGHT;
 const CHRONO_SECTION_HEIGHT: f32 = 44.0;
-const TOP_CHROME_HEIGHT: f32 = 86.0;
+const TOP_CHROME_HEIGHT: f32 = 60.0;
 const INERTIAL_SCROLL_WHEEL_MULTIPLIER: f32 = 0.9;
 const INERTIAL_SCROLL_VELOCITY_MULTIPLIER: f32 = 0.32;
 const INERTIAL_SCROLL_MIN_FLING_SPEED: f32 = 600.0;
@@ -134,7 +134,6 @@ pub struct MyCasaApp {
     photo_window_start: usize,
     all_photos_loaded: bool,
     folders: Vec<PathBuf>,
-    albums: Vec<String>,
     chronology_sections: Vec<ChronologicalSidebarSection>,
     selected_photo: Option<i64>,
     library_view_mode: LibraryViewMode,
@@ -197,11 +196,6 @@ impl MyCasaApp {
             photo_window_start: 0,
             all_photos_loaded,
             folders,
-            albums: vec![
-                "Toutes les photos".to_owned(),
-                "Favoris".to_owned(),
-                "Import recent".to_owned(),
-            ],
             chronology_sections,
             selected_photo: None,
             library_view_mode: LibraryViewMode::RetroChronological,
@@ -257,16 +251,6 @@ impl MyCasaApp {
             None => {
                 self.status = "Selection de dossier annulee".to_owned();
             }
-        }
-    }
-
-    fn scan_current_dir(&mut self) {
-        match std::env::current_dir() {
-            Ok(path) => {
-                add_folder_once(&mut self.folders, path.clone());
-                self.start_scan_folder(path);
-            }
-            Err(error) => self.status = format!("Dossier courant introuvable: {error}"),
         }
     }
 
@@ -599,19 +583,8 @@ impl MyCasaApp {
                             .strong()
                             .color(Color32::from_gray(70)),
                     );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let _ = ui.small_button("+");
-                    });
                 });
                 ui.separator();
-
-                egui::CollapsingHeader::new(format!("Albums ({})", self.albums.len()))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for album in &self.albums {
-                            let _ = ui.selectable_label(album == "Toutes les photos", album);
-                        }
-                    });
 
                 let chronology_sections = self.chronology_sections.clone();
                 egui::CollapsingHeader::new(format!("Chronologie ({})", chronology_sections.len()))
@@ -718,9 +691,6 @@ impl MyCasaApp {
                     });
 
                 ui.add_space(8.0);
-                if ui.button("Gestionnaire de dossiers").clicked() {
-                    self.pick_folder_and_scan();
-                }
                 if ui.button("Charger dossiers Picasa").clicked() {
                     let picasa_folders = crate::picasa_db::load_watched_folders();
                     let picasa_contacts = crate::picasa_db::load_contacts();
@@ -745,50 +715,9 @@ impl MyCasaApp {
             Stroke::new(1.0, CHROME_BORDER),
         );
         ui.horizontal(|ui| {
-            for label in [
-                "Fichier",
-                "Edition",
-                "Affichage",
-                "Dossier",
-                "Photo",
-                "Creation",
-                "Outils",
-                "Aide",
-            ] {
-                ui.label(
-                    RichText::new(label)
-                        .size(13.0)
-                        .color(Color32::from_gray(35)),
-                );
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.hyperlink_to("Connexion aux albums Web", "https://picasa.google.com/");
-            });
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
             for label in picasa_top_toolbar_button_labels() {
-                let enabled = picasa_top_toolbar_button_enabled(label);
-                let response = ui.add_enabled(enabled, egui::Button::new(label));
-                if !enabled {
-                    response.on_hover_text("Fonctionnalite pas encore implementee");
-                    continue;
-                }
-
-                if response.clicked() {
-                    match label {
-                        "Importer" => self.pick_folder_and_scan(),
-                        "Dossiers" => {
-                            self.library_view_mode = LibraryViewMode::FolderTree;
-                            self.status = "Vue dossiers".to_owned();
-                        }
-                        "Chronologie" => {
-                            self.library_view_mode = LibraryViewMode::RetroChronological;
-                            self.status = "Vue retrochronologique".to_owned();
-                        }
-                        "Scanner dossier courant" => self.scan_current_dir(),
-                        _ => {}
-                    }
+                if ui.button(label).clicked() {
+                    self.pick_folder_and_scan();
                 }
             }
         });
@@ -798,37 +727,22 @@ impl MyCasaApp {
 
     fn ui_filter_strip(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.add_space(260.0);
             ui.label(RichText::new("Filtres").color(Color32::from_gray(95)));
             for label in picasa_filter_button_labels() {
-                if picasa_filter_button_enabled(label) {
-                    if ui
-                        .selectable_label(
-                            picasa_filter_button_selected(self.photo_filters, label),
-                            label,
-                        )
-                        .on_hover_text(picasa_filter_button_tooltip(label))
-                        .clicked()
-                    {
-                        toggle_picasa_filter(&mut self.photo_filters, label);
-                        self.reset_photo_window();
-                        self.refresh_photos();
-                        self.status = picasa_filter_status_text(self.photo_filters).to_owned();
-                    }
-                } else {
-                    ui.add_enabled(false, egui::Button::new(label).small())
-                        .on_hover_text("Filtre pas encore implemente");
+                if ui
+                    .selectable_label(
+                        picasa_filter_button_selected(self.photo_filters, label),
+                        label,
+                    )
+                    .on_hover_text(picasa_filter_button_tooltip(label))
+                    .clicked()
+                {
+                    toggle_picasa_filter(&mut self.photo_filters, label);
+                    self.reset_photo_window();
+                    self.refresh_photos();
+                    self.status = picasa_filter_status_text(self.photo_filters).to_owned();
                 }
             }
-            let mut filter_strength = 0.0_f32;
-            ui.add_enabled_ui(false, |ui| {
-                let _ = ui.add_sized(
-                    [96.0, 18.0],
-                    egui::Slider::new(&mut filter_strength, 0.0..=1.0),
-                );
-            })
-            .response
-            .on_hover_text("Intensite de filtre pas encore implementee");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let response = ui.add_sized(
                     [360.0, 22.0],
@@ -874,30 +788,11 @@ impl MyCasaApp {
                 ui.label(RichText::new(loading_status).color(Color32::from_gray(115)));
             });
         });
-        ui.add_space(4.0);
-        self.ui_collection_actions(ui);
-        ui.add_space(4.0);
-        ui.label(RichText::new("Ajouter une description").color(Color32::from_gray(170)));
         ui.add_space(6.0);
     }
 
-    fn ui_collection_actions(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for action in picasa_collection_action_labels() {
-                ui.add_enabled_ui(false, |ui| {
-                    let _ = ui.add_sized(
-                        [picasa_collection_action_width(action), 24.0],
-                        egui::Button::new(action),
-                    );
-                })
-                .response
-                .on_hover_text("Action pas encore implementee");
-            }
-        });
-    }
-
     fn ui_top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .selectable_label(
                     self.library_view_mode == LibraryViewMode::FolderTree,
@@ -941,7 +836,6 @@ impl MyCasaApp {
                 self.main_scroll.velocity = 0.0;
                 self.status = thumbnail_mode_status_text(self.thumbnail_size_mode).to_owned();
             }
-            ui.label(RichText::new("Centre de retouche").color(Color32::from_gray(100)));
             if ui.button("Actualiser").clicked() {
                 self.refresh_photos();
             }
@@ -1437,10 +1331,6 @@ impl MyCasaApp {
                     .strong()
                     .color(Color32::from_gray(70)),
             );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_enabled(false, egui::Button::new("⚙").small())
-                    .on_hover_text("Reglages personnes pas encore implementes");
-            });
         });
         ui.separator();
         ui.label(RichText::new("Les personnes qui apparaissent dans les photos selectionnees seront repertoriees ici.").color(Color32::from_gray(105)));
@@ -1516,31 +1406,11 @@ impl MyCasaApp {
             detail_response.on_hover_text(metrics_text);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&self.status).color(Color32::from_gray(85)));
-            });
-            ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("Dossier selectionne")
-                        .color(PICASA_BLUE)
-                        .strong(),
-                );
-                ui.add_space(24.0);
-                for label in picasa_bottom_action_labels() {
-                    ui.add_enabled_ui(false, |ui| {
-                        let _ = ui.add_sized([82.0, 24.0], egui::Button::new(label));
-                    })
-                    .response
-                    .on_hover_text("Action pas encore implementee");
+                let response = ui.label(RichText::new(&self.status).color(Color32::from_gray(85)));
+                if let Ok(catalog) = &self.catalog {
+                    response.on_hover_text(catalog.path().display().to_string());
                 }
             });
-            if let Ok(catalog) = &self.catalog {
-                let path = catalog.path().display().to_string();
-                ui.add_space(2.0);
-                ui.label(RichText::new(middle_truncate(&path, 80)).color(Color32::from_gray(120)))
-                    .on_hover_text(path);
-            }
         });
     }
 }
@@ -2216,12 +2086,8 @@ fn chronological_sidebar_sections_from_months(
     sections
 }
 
-fn picasa_filter_button_labels() -> [&'static str; 5] {
-    ["★", "↑", "👤", "▦", "⌖"]
-}
-
-fn picasa_filter_button_enabled(label: &str) -> bool {
-    matches!(label, "★" | "👤")
+fn picasa_filter_button_labels() -> [&'static str; 2] {
+    ["★", "👤"]
 }
 
 fn picasa_filter_button_selected(filters: PicasaFilterState, label: &str) -> bool {
@@ -2290,46 +2156,8 @@ fn thumbnail_mode_status_text(mode: ThumbnailSizeMode) -> &'static str {
     }
 }
 
-fn picasa_top_toolbar_button_labels() -> [&'static str; 6] {
-    [
-        "Importer",
-        "Diaporama",
-        "Dossiers",
-        "Chronologie",
-        "CD cadeau",
-        "Scanner dossier courant",
-    ]
-}
-
-fn picasa_top_toolbar_button_enabled(label: &str) -> bool {
-    matches!(
-        label,
-        "Importer" | "Dossiers" | "Chronologie" | "Scanner dossier courant"
-    )
-}
-
-fn picasa_collection_action_labels() -> [&'static str; 6] {
-    ["Lecture", "Photo", "Film", "Favori", "Partager", "Menu"]
-}
-
-fn picasa_collection_action_width(label: &str) -> f32 {
-    match label {
-        "Partager" => 96.0,
-        "Lecture" => 74.0,
-        _ => 58.0,
-    }
-}
-
-fn picasa_bottom_action_labels() -> [&'static str; 7] {
-    [
-        "Album Web",
-        "E-mail",
-        "Imprimer",
-        "Commander",
-        "BlogThis!",
-        "Montage",
-        "Exporter",
-    ]
+fn picasa_top_toolbar_button_labels() -> [&'static str; 1] {
+    ["Importer"]
 }
 
 fn month_name(month: u32) -> &'static str {
@@ -2399,7 +2227,7 @@ impl eframe::App for MyCasaApp {
                 .show(ctx, |ui| self.ui_people_panel(ui));
 
             egui::TopBottomPanel::bottom("picasa_bottom_tray")
-                .exact_height(96.0)
+                .exact_height(54.0)
                 .show(ctx, |ui| self.ui_bottom_tray(ui));
 
             egui::CentralPanel::default()
@@ -3246,16 +3074,8 @@ mod tests {
     }
 
     #[test]
-    fn picasa_filter_strip_uses_reference_style_button_count() {
-        assert_eq!(picasa_filter_button_labels().len(), 5);
-    }
-
-    #[test]
-    fn star_and_face_filters_are_enabled_for_now() {
-        assert!(picasa_filter_button_enabled("★"));
-        assert!(picasa_filter_button_enabled("👤"));
-        assert!(!picasa_filter_button_enabled("↑"));
-        assert!(!picasa_filter_button_enabled("▦"));
+    fn filter_strip_only_lists_implemented_filters() {
+        assert_eq!(picasa_filter_button_labels().as_slice(), ["★", "👤"]);
     }
 
     #[test]
@@ -3347,51 +3167,8 @@ mod tests {
     }
 
     #[test]
-    fn top_toolbar_marks_only_real_actions_enabled() {
-        let labels = picasa_top_toolbar_button_labels();
-
-        assert_eq!(
-            labels
-                .iter()
-                .copied()
-                .filter(|label| picasa_top_toolbar_button_enabled(label))
-                .collect::<Vec<_>>(),
-            [
-                "Importer",
-                "Dossiers",
-                "Chronologie",
-                "Scanner dossier courant"
-            ]
-        );
-        assert!(!picasa_top_toolbar_button_enabled("Diaporama"));
-        assert!(!picasa_top_toolbar_button_enabled("CD cadeau"));
-    }
-
-    #[test]
-    fn picasa_collection_actions_match_reference_header_controls() {
-        assert_eq!(
-            picasa_collection_action_labels(),
-            ["Lecture", "Photo", "Film", "Favori", "Partager", "Menu"]
-        );
-        assert!(
-            picasa_collection_action_width("Partager") > picasa_collection_action_width("Menu")
-        );
-    }
-
-    #[test]
-    fn picasa_bottom_tray_keeps_reference_action_count() {
-        assert_eq!(
-            picasa_bottom_action_labels(),
-            [
-                "Album Web",
-                "E-mail",
-                "Imprimer",
-                "Commander",
-                "BlogThis!",
-                "Montage",
-                "Exporter"
-            ]
-        );
+    fn top_toolbar_only_lists_import_without_duplicate_view_switches() {
+        assert_eq!(picasa_top_toolbar_button_labels().as_slice(), ["Importer"]);
     }
 
     fn photo_for_test(id: i64) -> Photo {

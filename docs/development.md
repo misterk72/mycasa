@@ -38,7 +38,13 @@ Chaque item doit etre implemente par petits increments TDD avec un test rouge av
 
 ## Etat Fonctionnel
 - Les filtres Favoris (`★`) et Visages (`👤`) sont actifs dans la barre de filtres Picasa : ils rechargent la grille, la pagination continue et la chronologie depuis SQLite et peuvent etre combines.
-- Les autres filtres Picasa visibles restent volontairement grises tant que leurs comportements ne sont pas implementes.
+- Seuls les filtres Favoris et Visages sont affiches ; les fonctions non implementees ne sont pas presentees dans l’interface.
 - Le volet Personnes affiche les noms de contacts Picasa importes depuis les visages `.picasa.ini` quand une photo selectionnee en contient.
 - Les modes `Petites vignettes` et `Vignettes normales` sont actifs dans la phototheque et adaptent la grille virtualisee ainsi que les hauteurs de chronologie.
 - La selection phototheque suit le comportement Picasa : clic simple pour selectionner, double-clic ou Entree pour ouvrir, navigation aux fleches avec auto-scroll, et details nom/date/dimensions/taille dans la barre bleue basse.
+
+## Nettoyage de l’interface
+- Les menus factices, albums fictifs, liens Web Picasa et actions non implementees ont ete retires.
+- L’import de dossiers, la recherche, les vues Dossiers/Chronologie, les tailles de vignettes, l’actualisation et les informations de personnes restent disponibles.
+- Le panneau de retouche vide de la visionneuse a ete retire ; le zoom est accessible dans la barre superieure, avec le retour a la phototheque et la navigation.
+- Le chemin du catalogue reste accessible dans l’infobulle de la barre d’etat.

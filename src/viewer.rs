@@ -18,10 +18,8 @@ use crate::thumbnails::{ThumbnailCache, ThumbnailState, load_cached_thumbnail_im
 const VIEWER_MIN_SIZE: Vec2 = Vec2::new(980.0, 680.0);
 #[cfg(test)]
 const VIEWER_MAX_SIZE: Vec2 = Vec2::new(1280.0, 880.0);
-const VIEWER_TOOL_PANEL_WIDTH: f32 = 210.0;
 const VIEWER_FILMSTRIP_HEIGHT: f32 = 68.0;
 const VIEWER_BG: Color32 = Color32::from_rgb(224, 226, 229);
-const VIEWER_PANEL_BG: Color32 = Color32::from_rgb(238, 240, 244);
 const VIEWER_CANVAS_BG: Color32 = Color32::from_rgb(154, 154, 154);
 const VIEWER_BUTTON_BG: Color32 = Color32::from_rgb(244, 246, 249);
 const VIEWER_BUTTON_HOVER_BG: Color32 = Color32::from_rgb(230, 238, 249);
@@ -36,8 +34,6 @@ const VIEWER_MIN_CANVAS_HEIGHT: f32 = 240.0;
 const VIEWER_MIN_CANVAS_WIDTH: f32 = 680.0;
 const VIEWER_IMAGE_MARGIN: f32 = 16.0;
 const VIEWER_MATTE_PADDING: f32 = 8.0;
-const VIEWER_TOOL_BUTTON_WIDTH: f32 = 96.0;
-const VIEWER_TOOL_BUTTON_HEIGHT: f32 = 23.0;
 const VIEWER_NAV_BUTTON_HEIGHT: f32 = 22.0;
 const VIEWER_FILMSTRIP_RADIUS: usize = 2;
 const VIEWER_FILMSTRIP_THUMB_SIZE: f32 = 60.0;
@@ -46,8 +42,6 @@ const VIEWER_PRELOAD_CACHE_CAPACITY: usize = 9;
 const VIEWER_MAX_PENDING_FULL_LOADS: usize = 4;
 const VIEWER_DISK_CACHE_DIR: &str = "viewer";
 const VIEWER_SLIDE_TRANSITION_SECONDS: f32 = 0.18;
-#[cfg(test)]
-const VIEWER_PANEL_GAP: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationDirection {
@@ -304,15 +298,6 @@ impl ViewerState {
                 self.show_filmstrip(ui, ui.max_rect(), thumbnails, &filmstrip_photos, photo.id);
             });
 
-        egui::SidePanel::left("viewer_tools")
-            .resizable(false)
-            .exact_width(VIEWER_TOOL_PANEL_WIDTH)
-            .frame(egui::Frame::default().fill(VIEWER_PANEL_BG))
-            .show(ctx, |ui| {
-                apply_viewer_visuals(ui);
-                self.show_tool_panel(ui);
-            });
-
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(VIEWER_BG))
             .show(ctx, |ui| {
@@ -335,17 +320,17 @@ impl ViewerState {
         ui.painter().rect_filled(rect, 0.0, VIEWER_BG);
         let left_rect = egui::Rect::from_min_size(
             rect.min + Vec2::new(4.0, 4.0),
-            Vec2::new(205.0, rect.height() - 8.0),
+            Vec2::new(110.0, rect.height() - 8.0),
         );
         let right_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - 160.0, rect.top() + 4.0),
-            Vec2::new(156.0, rect.height() - 8.0),
+            egui::pos2(rect.right() - 195.0, rect.top() + 4.0),
+            Vec2::new(191.0, rect.height() - 8.0),
         );
         let preview_width = filmstrip_preview_width(photos.len());
         let center_rect = egui::Rect::from_center_size(
             rect.center(),
             Vec2::new(
-                preview_width.min(rect.width() - 420.0).max(150.0),
+                preview_width.min(rect.width() - 400.0).max(150.0),
                 rect.height() - 6.0,
             ),
         );
@@ -361,14 +346,6 @@ impl ViewerState {
                 {
                     self.close();
                 }
-                ui.add_enabled_ui(viewer_filmstrip_action_enabled("▶ Diaporama"), |ui| {
-                    let _ = ui.add_sized(
-                        Vec2::new(92.0, VIEWER_NAV_BUTTON_HEIGHT),
-                        viewer_disabled_button("▶ Diaporama"),
-                    );
-                })
-                .response
-                .on_hover_text("Diaporama pas encore implemente");
             });
         });
         ui.scope_builder(
@@ -402,9 +379,9 @@ impl ViewerState {
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(right_rect)
-                .layout(Layout::right_to_left(Align::Center)),
+                .layout(Layout::left_to_right(Align::Center)),
             |ui| {
-                ui.label(RichText::new("A+  A-  A/A").color(Color32::from_gray(70)));
+                self.show_zoom_controls(ui);
             },
         );
     }
@@ -474,80 +451,14 @@ impl ViewerState {
         }
     }
 
-    fn show_tool_panel(&mut self, ui: &mut egui::Ui) {
-        ui.set_width(VIEWER_TOOL_PANEL_WIDTH);
-        let panel_rect = ui.max_rect();
-        ui.painter().rect_filled(panel_rect, 0.0, VIEWER_PANEL_BG);
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(panel_rect.shrink2(Vec2::new(8.0, 6.0))),
-            |ui| {
-                ui.horizontal(|ui| {
-                    let _ =
-                        ui.selectable_label(true, RichText::new("Ret. simples").color(VIEWER_BLUE));
-                    for tab in ["Reglages", "Effets"] {
-                        ui.add_enabled_ui(viewer_tool_tab_enabled(tab), |ui| {
-                            let _ = ui.selectable_label(false, tab);
-                        })
-                        .response
-                        .on_hover_text("Onglet pas encore implemente");
-                    }
-                });
-                ui.separator();
-                ui.label(RichText::new("Retouches courantes").strong());
-                let tools = [
-                    "Recadrer",
-                    "Redresser",
-                    "Yeux rouges",
-                    "J'ai de la chance",
-                    "Contraste auto",
-                    "Couleur auto",
-                    "Retoucher",
-                    "Texte",
-                ];
-                egui::Grid::new("viewer-basic-tools")
-                    .num_columns(2)
-                    .spacing(Vec2::new(5.0, 5.0))
-                    .show(ui, |ui| {
-                        for (index, tool) in tools.iter().enumerate() {
-                            ui.add_enabled_ui(viewer_basic_tool_enabled(tool), |ui| {
-                                let _ = ui.add_sized(
-                                    viewer_tool_button_size(),
-                                    viewer_disabled_button(*tool),
-                                );
-                            })
-                            .response
-                            .on_hover_text("Retouche pas encore implementee");
-                            if index % 2 == 1 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_sized(
-                            Vec2::new(48.0, VIEWER_NAV_BUTTON_HEIGHT),
-                            viewer_button("- Zoom"),
-                        )
-                        .clicked()
-                    {
-                        self.zoom = adjusted_zoom(self.zoom, -VIEWER_ZOOM_STEP);
-                    }
-                    ui.label(format!("{:.0}%", self.zoom * 100.0));
-                    if ui
-                        .add_sized(
-                            Vec2::new(54.0, VIEWER_NAV_BUTTON_HEIGHT),
-                            viewer_button("+ Zoom"),
-                        )
-                        .clicked()
-                    {
-                        self.zoom = adjusted_zoom(self.zoom, VIEWER_ZOOM_STEP);
-                    }
-                });
-                ui.add_space(10.0);
-                ui.label(RichText::new("Histogramme et infos").color(Color32::from_gray(95)));
-            },
-        );
+    fn show_zoom_controls(&mut self, ui: &mut egui::Ui) {
+        if ui.add(viewer_button("- Zoom")).clicked() {
+            self.zoom = adjusted_zoom(self.zoom, -VIEWER_ZOOM_STEP);
+        }
+        ui.label(format!("{:.0}%", self.zoom * 100.0));
+        if ui.add(viewer_button("+ Zoom")).clicked() {
+            self.zoom = adjusted_zoom(self.zoom, VIEWER_ZOOM_STEP);
+        }
     }
 
     fn show_metadata(&self, ui: &mut egui::Ui, rect: egui::Rect, photo: &Photo) {
@@ -985,33 +896,10 @@ pub fn viewer_panel_stage_size(panel_rect: egui::Rect) -> Vec2 {
     panel_rect.size()
 }
 
-pub fn viewer_tool_button_size() -> Vec2 {
-    Vec2::new(VIEWER_TOOL_BUTTON_WIDTH, VIEWER_TOOL_BUTTON_HEIGHT)
-}
-
 fn viewer_button(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).color(Color32::from_rgb(43, 48, 52)))
         .fill(VIEWER_BUTTON_BG)
         .stroke(Stroke::new(1.0, VIEWER_BUTTON_STROKE))
-        .corner_radius(2.0)
-}
-
-fn viewer_filmstrip_action_enabled(label: &str) -> bool {
-    matches!(label, "← Phototheque" | "◀" | "▶")
-}
-
-fn viewer_tool_tab_enabled(label: &str) -> bool {
-    label == "Ret. simples"
-}
-
-fn viewer_basic_tool_enabled(_label: &str) -> bool {
-    false
-}
-
-fn viewer_disabled_button(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(Color32::from_gray(135)))
-        .fill(Color32::from_rgb(228, 231, 235))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(196, 201, 207)))
         .corner_radius(2.0)
 }
 
@@ -1043,14 +931,6 @@ fn filmstrip_preview_width(photo_count: usize) -> f32 {
     let thumbnails_width = photo_count as f32 * VIEWER_FILMSTRIP_THUMB_SIZE
         + photo_count.saturating_sub(1) as f32 * VIEWER_FILMSTRIP_THUMB_GAP;
     thumbnails_width + 2.0 * 22.0 + 2.0 * VIEWER_FILMSTRIP_THUMB_GAP
-}
-
-#[cfg(test)]
-pub fn viewer_stage_size(total: Vec2) -> Vec2 {
-    Vec2::new(
-        (total.x - VIEWER_TOOL_PANEL_WIDTH - VIEWER_PANEL_GAP).max(0.0),
-        total.y,
-    )
 }
 
 #[cfg(test)]
@@ -1235,30 +1115,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn viewer_tool_panel_width_matches_reference_layout() {
-        assert_eq!(VIEWER_TOOL_PANEL_WIDTH, 210.0);
-    }
-
-    #[test]
-    fn viewer_tool_button_size_matches_two_column_panel() {
-        assert_eq!(
-            viewer_tool_button_size(),
-            Vec2::new(VIEWER_TOOL_BUTTON_WIDTH, VIEWER_TOOL_BUTTON_HEIGHT)
+    fn filmstrip_shows_navigation_and_zoom_without_placeholders() {
+        let ctx = egui::Context::default();
+        let mut viewer = ViewerState::default();
+        let mut thumbnails = ThumbnailCache::new();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1280.0, 820.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rect =
+                        egui::Rect::from_min_size(ui.min_rect().min, Vec2::new(1260.0, 68.0));
+                    viewer.show_filmstrip(ui, rect, &mut thumbnails, &[], 0);
+                });
+            },
         );
-        assert!(viewer_tool_button_size().x * 2.0 < VIEWER_TOOL_PANEL_WIDTH);
-    }
-
-    #[test]
-    fn viewer_marks_unimplemented_controls_disabled() {
-        assert!(viewer_filmstrip_action_enabled("← Phototheque"));
-        assert!(viewer_filmstrip_action_enabled("◀"));
-        assert!(viewer_filmstrip_action_enabled("▶"));
-        assert!(!viewer_filmstrip_action_enabled("▶ Diaporama"));
-        assert!(viewer_tool_tab_enabled("Ret. simples"));
-        assert!(!viewer_tool_tab_enabled("Reglages"));
-        assert!(!viewer_tool_tab_enabled("Effets"));
-        assert!(!viewer_basic_tool_enabled("Recadrer"));
-        assert!(!viewer_basic_tool_enabled("Texte"));
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    Some(text.galley.text())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(labels.contains(&"← Phototheque"), "{labels:?}");
+        assert!(labels.contains(&"- Zoom"), "{labels:?}");
+        assert!(labels.contains(&"+ Zoom"), "{labels:?}");
+        assert!(
+            !labels
+                .iter()
+                .any(|text| text.contains("Diaporama") || text.contains("A/A")),
+            "{labels:?}"
+        );
     }
 
     #[test]
@@ -1370,18 +1266,6 @@ mod tests {
         let panel = egui::Rect::from_min_size(egui::pos2(210.0, 34.0), Vec2::new(1490.0, 900.0));
 
         assert_eq!(viewer_panel_stage_size(panel), Vec2::new(1490.0, 900.0));
-    }
-
-    #[test]
-    fn viewer_stage_uses_remaining_width_after_tool_panel() {
-        let stage = viewer_stage_size(Vec2::new(1800.0, 900.0));
-        let narrow = viewer_stage_size(Vec2::new(180.0, 900.0));
-
-        assert_eq!(
-            stage,
-            Vec2::new(1800.0 - VIEWER_TOOL_PANEL_WIDTH - VIEWER_PANEL_GAP, 900.0)
-        );
-        assert_eq!(narrow, Vec2::new(0.0, 900.0));
     }
 
     #[test]
