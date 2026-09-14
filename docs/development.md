@@ -48,3 +48,5 @@ Chaque item doit etre implemente par petits increments TDD avec un test rouge av
 - L’import de dossiers, la recherche, les vues Dossiers/Chronologie, les tailles de vignettes, l’actualisation et les informations de personnes restent disponibles.
 - Le panneau de retouche vide de la visionneuse a ete retire ; le zoom est accessible dans la barre superieure, avec le retour a la phototheque et la navigation.
 - Le chemin du catalogue reste accessible dans l’infobulle de la barre d’etat.
+
+- La vue photo propose deux boutons de rotation de 90° (gauche/droite), dans la barre inférieure, sous les informations de la photo, avec le zoom à droite. La rotation concerne uniquement l’affichage, conserve le zoom et revient à zéro à l’ouverture d’une autre photo ; les fichiers originaux restent intacts.

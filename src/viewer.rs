@@ -58,6 +58,7 @@ pub enum ViewerNavigationRequest {
 pub struct ViewerState {
     current: Option<Photo>,
     zoom: f32,
+    quarter_turns: u8,
     loaded_photo_id: Option<i64>,
     preview_texture: Option<TextureHandle>,
     full_texture: Option<TextureHandle>,
@@ -78,6 +79,7 @@ struct ViewerTransition {
     elapsed: f32,
     previous_texture: TextureHandle,
     previous_zoom: f32,
+    previous_quarter_turns: u8,
 }
 
 enum ViewerMessage {
@@ -157,6 +159,7 @@ impl Default for ViewerState {
         Self {
             current: None,
             zoom: 1.0,
+            quarter_turns: 0,
             loaded_photo_id: None,
             preview_texture: None,
             full_texture: None,
@@ -229,9 +232,11 @@ impl ViewerState {
                 .map(|texture| (direction, texture))
         });
         let previous_zoom = self.zoom;
+        let previous_quarter_turns = self.quarter_turns;
         self.failed_full_loads.remove(&photo.id);
         self.current = Some(photo);
         self.zoom = 1.0;
+        self.quarter_turns = 0;
         self.loaded_photo_id = None;
         self.preview_texture = None;
         self.full_texture = None;
@@ -242,6 +247,7 @@ impl ViewerState {
             elapsed: 0.0,
             previous_texture,
             previous_zoom,
+            previous_quarter_turns,
         });
     }
 
@@ -298,6 +304,29 @@ impl ViewerState {
                 self.show_filmstrip(ui, ui.max_rect(), thumbnails, &filmstrip_photos, photo.id);
             });
 
+        egui::TopBottomPanel::bottom("viewer_actions")
+            .exact_height(34.0)
+            .frame(egui::Frame::default().fill(VIEWER_BG).inner_margin(5.0))
+            .show(ctx, |ui| {
+                apply_viewer_visuals(ui);
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    if rotation_button(ui, false).clicked() {
+                        self.quarter_turns = (self.quarter_turns + 3) % 4;
+                    }
+                    if rotation_button(ui, true).clicked() {
+                        self.quarter_turns = (self.quarter_turns + 1) % 4;
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(191.0, 24.0),
+                            Layout::left_to_right(Align::Center),
+                            |ui| self.show_zoom_controls(ui),
+                        );
+                    });
+                });
+            });
+
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(VIEWER_BG))
             .show(ctx, |ui| {
@@ -322,10 +351,6 @@ impl ViewerState {
             rect.min + Vec2::new(4.0, 4.0),
             Vec2::new(110.0, rect.height() - 8.0),
         );
-        let right_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - 195.0, rect.top() + 4.0),
-            Vec2::new(191.0, rect.height() - 8.0),
-        );
         let preview_width = filmstrip_preview_width(photos.len());
         let center_rect = egui::Rect::from_center_size(
             rect.center(),
@@ -336,16 +361,17 @@ impl ViewerState {
         );
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
-            ui.horizontal(|ui| {
+            ui.vertical(|ui| {
                 if ui
                     .add_sized(
                         Vec2::new(100.0, VIEWER_NAV_BUTTON_HEIGHT),
-                        viewer_button("← Phototheque"),
+                        viewer_button("Photothèque"),
                     )
                     .clicked()
                 {
                     self.close();
                 }
+
             });
         });
         ui.scope_builder(
@@ -374,14 +400,6 @@ impl ViewerState {
                 {
                     self.request_navigation(NavigationDirection::Next);
                 }
-            },
-        );
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(right_rect)
-                .layout(Layout::left_to_right(Align::Center)),
-            |ui| {
-                self.show_zoom_controls(ui);
             },
         );
     }
@@ -691,13 +709,16 @@ impl ViewerState {
 
         let transition = self.active_transition(ui);
 
-        if let Some((direction, progress, previous_texture, previous_zoom)) = transition {
+        if let Some((direction, progress, previous_texture, previous_zoom, previous_quarter_turns)) = transition
+        {
             let distance = rect.width().max(1.0);
             let (previous_offset, current_offset) =
                 viewer_transition_offsets(direction, progress, distance);
-            paint_viewer_texture(ui, rect, &previous_texture, previous_zoom, previous_offset);
+            paint_viewer_texture(
+                ui, rect, &previous_texture, previous_zoom, previous_offset, previous_quarter_turns,
+            );
             if let Some(texture) = self.visible_texture() {
-                paint_viewer_texture(ui, rect, texture, self.zoom, current_offset);
+                paint_viewer_texture(ui, rect, texture, self.zoom, current_offset, self.quarter_turns);
             }
         } else {
             self.show_static_image_or_placeholder(ui, rect);
@@ -709,7 +730,7 @@ impl ViewerState {
     fn active_transition(
         &mut self,
         ui: &egui::Ui,
-    ) -> Option<(NavigationDirection, f32, TextureHandle, f32)> {
+    ) -> Option<(NavigationDirection, f32, TextureHandle, f32, u8)> {
         let Some(transition) = &mut self.transition else {
             return None;
         };
@@ -724,6 +745,7 @@ impl ViewerState {
             progress,
             transition.previous_texture.clone(),
             transition.previous_zoom,
+            transition.previous_quarter_turns,
         ));
         if progress >= 1.0 {
             self.transition = None;
@@ -733,7 +755,7 @@ impl ViewerState {
 
     fn show_static_image_or_placeholder(&self, ui: &egui::Ui, rect: egui::Rect) {
         if let Some(texture) = self.visible_texture() {
-            paint_viewer_texture(ui, rect, texture, self.zoom, 0.0);
+            paint_viewer_texture(ui, rect, texture, self.zoom, 0.0, self.quarter_turns);
         } else {
             let label = if self.loading {
                 "Chargement de l'image"
@@ -821,8 +843,14 @@ fn paint_viewer_texture(
     texture: &TextureHandle,
     zoom: f32,
     offset_x: f32,
+    quarter_turns: u8,
 ) {
-    let image_size = texture.size_vec2();
+    let size = texture.size_vec2();
+    let image_size = if quarter_turns % 2 == 0 {
+        size
+    } else {
+        Vec2::new(size.y, size.x)
+    };
     let image_rect =
         viewer_image_rect(canvas_rect, image_size, zoom).translate(Vec2::new(offset_x, 0.0));
     let matte_rect = image_rect.expand(VIEWER_MATTE_PADDING);
@@ -834,12 +862,28 @@ fn paint_viewer_texture(
         egui::Stroke::new(1.0, Color32::from_rgb(118, 118, 118)),
         egui::StrokeKind::Inside,
     );
-    ui.painter().image(
-        texture.id(),
-        image_rect,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        Color32::WHITE,
-    );
+    let corners = [
+        image_rect.left_top(),
+        image_rect.right_top(),
+        image_rect.right_bottom(),
+        image_rect.left_bottom(),
+    ];
+    let uvs = [
+        egui::pos2(0.0, 0.0),
+        egui::pos2(1.0, 0.0),
+        egui::pos2(1.0, 1.0),
+        egui::pos2(0.0, 1.0),
+    ];
+    let mut mesh = egui::Mesh::with_texture(texture.id());
+    for (index, pos) in corners.into_iter().enumerate() {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos,
+            uv: uvs[(index + 4 - usize::from(quarter_turns % 4)) % 4],
+            color: Color32::WHITE,
+        });
+    }
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    ui.painter().add(mesh);
 }
 
 pub fn viewer_transition_progress(elapsed_seconds: f32) -> f32 {
@@ -894,6 +938,45 @@ pub fn viewer_fit_rect(container: egui::Rect, content_size: Vec2) -> egui::Rect 
 #[cfg(test)]
 pub fn viewer_panel_stage_size(panel_rect: egui::Rect) -> Vec2 {
     panel_rect.size()
+}
+
+// Picasa-style U-turn arrow: a broad lower curve and a solid upward head.
+fn rotation_icon_geometry(clockwise: bool) -> (Vec<egui::Pos2>, [egui::Pos2; 3]) {
+    let mirror = if clockwise { -1.0 } else { 1.0 };
+    let point = |x: f32, y: f32| egui::pos2(mirror * x, y);
+    let mut arc = vec![point(-5.0, -5.0)];
+    arc.extend((0..=20).map(|step| {
+        let angle = std::f32::consts::PI * (1.0 - step as f32 / 20.0);
+        point(5.0 * angle.cos(), 5.0 * angle.sin())
+    }));
+    arc.push(point(5.0, -3.0));
+    (arc, [point(5.0, -8.0), point(1.0, -2.0), point(9.0, -2.0)])
+}
+
+// Draw the icon ourselves so it does not depend on Unicode font coverage.
+fn rotation_button(ui: &mut egui::Ui, clockwise: bool) -> egui::Response {
+    let label = if clockwise {
+        "Rotation de 90° à droite"
+    } else {
+        "Rotation de 90° à gauche"
+    };
+    let response = ui
+        .add_sized(Vec2::new(30.0, 24.0), viewer_button(""))
+        .on_hover_text(label);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let center = response.rect.center();
+    let (arc, head) = rotation_icon_geometry(clockwise);
+    let color = Color32::from_rgb(76, 82, 88);
+    ui.painter().add(egui::Shape::line(
+        arc.into_iter().map(|point| center + point.to_vec2()).collect(),
+        Stroke::new(2.5, color),
+    ));
+    ui.painter().add(egui::Shape::convex_polygon(
+        head.into_iter().map(|point| center + point.to_vec2()).collect(),
+        color,
+        Stroke::NONE,
+    ));
+    response
 }
 
 fn viewer_button(label: &str) -> egui::Button<'_> {
@@ -1115,10 +1198,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filmstrip_shows_navigation_and_zoom_without_placeholders() {
+    fn viewer_shows_navigation_above_and_zoom_below_photo() {
         let ctx = egui::Context::default();
         let mut viewer = ViewerState::default();
         let mut thumbnails = ThumbnailCache::new();
+        viewer.open(photo_for_test(1));
+        viewer.remember_preloaded_image(1, color_image_for_test(50));
         let output = ctx.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -1128,11 +1213,7 @@ mod tests {
                 ..Default::default()
             },
             |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let rect =
-                        egui::Rect::from_min_size(ui.min_rect().min, Vec2::new(1260.0, 68.0));
-                    viewer.show_filmstrip(ui, rect, &mut thumbnails, &[], 0);
-                });
+                viewer.show_docked(ctx, &[], &mut thumbnails);
             },
         );
         let labels: Vec<_> = output
@@ -1146,7 +1227,14 @@ mod tests {
                 }
             })
             .collect();
-        assert!(labels.contains(&"← Phototheque"), "{labels:?}");
+        assert!(labels.contains(&"Photothèque"), "{labels:?}");
+        let text_y = |label: &str| output.shapes.iter().find_map(|shape| {
+            if let egui::Shape::Text(text) = &shape.shape {
+                (text.galley.text() == label).then_some(text.pos.y)
+            } else { None }
+        }).unwrap();
+        assert!(text_y("Photothèque") < 68.0);
+        assert!(text_y("- Zoom") > 760.0);
         assert!(labels.contains(&"- Zoom"), "{labels:?}");
         assert!(labels.contains(&"+ Zoom"), "{labels:?}");
         assert!(
@@ -1840,6 +1928,21 @@ mod tests {
             adjacent_photo_id(&photos, 99, NavigationDirection::Next),
             None
         );
+    }
+
+    #[test]
+    fn rotation_icons_are_mirrored_and_fit_compact_buttons() {
+        let (left_arc, left_head) = rotation_icon_geometry(false);
+        let (right_arc, right_head) = rotation_icon_geometry(true);
+        for (left, right) in left_arc.iter().chain(left_head.iter())
+            .zip(right_arc.iter().chain(right_head.iter())) {
+            assert!((left.x + right.x).abs() < 0.001);
+            assert!((left.y - right.y).abs() < 0.001);
+            assert!(left.x.abs() <= 9.0 && left.y.abs() <= 9.0);
+        }
+        assert!(left_head[0].x > 0.0);
+        assert!(right_head[0].x < 0.0);
+        assert!(left_head[0].y < left_head[1].y);
     }
 
     fn photo_for_test(id: i64) -> Photo {
