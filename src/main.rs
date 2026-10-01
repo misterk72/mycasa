@@ -2,6 +2,7 @@ mod app;
 mod catalog;
 mod debounce;
 mod decode_profile;
+mod file_manager;
 mod folders;
 mod grid;
 mod indexer;

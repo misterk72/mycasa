@@ -1251,6 +1251,12 @@ impl MyCasaApp {
         if response.double_clicked() {
             self.viewer.open(photo.clone());
         }
+        response.context_menu(|ui| {
+            if ui.button("Ouvrir le dossier").clicked() {
+                crate::file_manager::open_photo_folder(&photo.path);
+                ui.close();
+            }
+        });
 
         if response.hovered() {
             ui.painter()
@@ -1406,6 +1412,14 @@ impl MyCasaApp {
             detail_response.on_hover_text(metrics_text);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
+                if ui.add_enabled(selected_photo.is_some(), egui::Button::new("Ouvrir le dossier"))
+                    .on_hover_text("Ouvrir le dossier et sélectionner la photo dans l'explorateur de fichiers")
+                    .clicked()
+                {
+                    if let Some(photo) = selected_photo {
+                        crate::file_manager::open_photo_folder(&photo.path);
+                    }
+                }
                 let response = ui.label(RichText::new(&self.status).color(Color32::from_gray(85)));
                 if let Ok(catalog) = &self.catalog {
                     response.on_hover_text(catalog.path().display().to_string());

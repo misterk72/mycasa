@@ -317,6 +317,12 @@ impl ViewerState {
                     if rotation_button(ui, true).clicked() {
                         self.quarter_turns = (self.quarter_turns + 1) % 4;
                     }
+                    if ui.add(viewer_button("Ouvrir le dossier"))
+                        .on_hover_text("Ouvrir le dossier et sélectionner la photo dans l'explorateur de fichiers")
+                        .clicked()
+                    {
+                        crate::file_manager::open_photo_folder(&photo.path);
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.allocate_ui_with_layout(
                             Vec2::new(191.0, 24.0),
