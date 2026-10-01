@@ -46,7 +46,9 @@ Chaque item doit etre implemente par petits increments TDD avec un test rouge av
 ## Nettoyage de l’interface
 - Les menus factices, albums fictifs, liens Web Picasa et actions non implementees ont ete retires.
 - L’import de dossiers, la recherche, les vues Dossiers/Chronologie, les tailles de vignettes, l’actualisation et les informations de personnes restent disponibles.
-- Le panneau de retouche vide de la visionneuse a ete retire ; le zoom est accessible dans la barre superieure, avec le retour a la phototheque et la navigation.
+- Le panneau de retouche vide de la visionneuse a ete retire ; le zoom est accessible dans la barre inférieure, le retour à la photothèque et la navigation restent en haut.
 - Le chemin du catalogue reste accessible dans l’infobulle de la barre d’etat.
 
 - La vue photo propose deux boutons de rotation de 90° (gauche/droite), dans la barre inférieure, sous les informations de la photo, avec le zoom à droite. La rotation concerne uniquement l’affichage, conserve le zoom et revient à zéro à l’ouverture d’une autre photo ; les fichiers originaux restent intacts.
+- Le zoom reprend les contrôles de Picasa : molette sur la photo, curseur, « Ajuster », « 100 % », déplacement par glissement et miniature de repérage quand la photo dépasse le cadre. Un glissement depuis la vue ajustée passe à la taille réelle. Les touches `+`/`-` règlent le zoom et `1` bascule entre taille réelle et vue ajustée. La molette sur le bandeau des miniatures, ou avec Ctrl, conserve la navigation entre photos.
+- Le pourcentage représente les pixels de la photo par pixel d’écran, y compris avec une mise à l’échelle HiDPI. Le zoom va de la vue ajustée à 400 %, conserve son échelle au redimensionnement et se réinitialise à l’ouverture d’une autre photo. Les détails de l’original sont chargés en arrière-plan au premier agrandissement, séparément du cache de prévisualisation de 1 600 pixels ; seule la photo courante conserve cette texture. Les images dépassant la taille maximale de texture du GPU sont réduites pour l’affichage, tout en conservant leurs dimensions natives pour calculer le zoom.

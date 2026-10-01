@@ -25,9 +25,9 @@ const VIEWER_BUTTON_BG: Color32 = Color32::from_rgb(244, 246, 249);
 const VIEWER_BUTTON_HOVER_BG: Color32 = Color32::from_rgb(230, 238, 249);
 const VIEWER_BUTTON_STROKE: Color32 = Color32::from_rgb(168, 176, 184);
 const VIEWER_BLUE: Color32 = Color32::from_rgb(86, 132, 199);
-const VIEWER_MIN_ZOOM: f32 = 0.2;
 const VIEWER_MAX_ZOOM: f32 = 4.0;
-const VIEWER_ZOOM_STEP: f32 = 0.1;
+const VIEWER_WHEEL_ZOOM_SENSITIVITY: f32 = 0.002;
+
 const VIEWER_IMAGE_MAX_EDGE: u32 = 1600;
 const VIEWER_METADATA_HEIGHT: f32 = 44.0;
 const VIEWER_MIN_CANVAS_HEIGHT: f32 = 240.0;
@@ -58,6 +58,15 @@ pub enum ViewerNavigationRequest {
 pub struct ViewerState {
     current: Option<Photo>,
     zoom: f32,
+    pan: Vec2,
+    canvas: Option<egui::Rect>,
+    last_fit_scale: Option<f32>,
+    detail_texture: Option<TextureHandle>,
+    detail_receiver: Option<Receiver<Option<ViewerDetailImage>>>,
+    detail_source_size: Option<Vec2>,
+    detail_requested: bool,
+    detail_failed: bool,
+    wheel_navigation_allowed: bool,
     quarter_turns: u8,
     loaded_photo_id: Option<i64>,
     preview_texture: Option<TextureHandle>,
@@ -79,6 +88,8 @@ struct ViewerTransition {
     elapsed: f32,
     previous_texture: TextureHandle,
     previous_zoom: f32,
+    previous_pan: Vec2,
+    previous_size: Vec2,
     previous_quarter_turns: u8,
 }
 
@@ -103,6 +114,25 @@ struct ViewerImageLoad {
 struct ViewerCacheWrite {
     path: PathBuf,
     image: image::DynamicImage,
+}
+
+struct ViewerDetailImage {
+    image: ColorImage,
+    source_size: Vec2,
+}
+
+fn load_viewer_detail(path: &std::path::Path, max_side: u32) -> Option<ViewerDetailImage> {
+    let image = image::open(path).ok()?;
+    let source_size = Vec2::new(image.width() as f32, image.height() as f32);
+    let image = if image.width().max(image.height()) > max_side {
+        image.thumbnail(max_side, max_side)
+    } else {
+        image
+    };
+    Some(ViewerDetailImage {
+        image: dynamic_to_color_image(&image),
+        source_size,
+    })
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +189,15 @@ impl Default for ViewerState {
         Self {
             current: None,
             zoom: 1.0,
+            pan: Vec2::ZERO,
+            canvas: None,
+            last_fit_scale: None,
+            detail_texture: None,
+            detail_receiver: None,
+            detail_source_size: None,
+            detail_requested: false,
+            detail_failed: false,
+            wheel_navigation_allowed: false,
             quarter_turns: 0,
             loaded_photo_id: None,
             preview_texture: None,
@@ -209,6 +248,8 @@ impl ViewerState {
 
     pub fn close(&mut self) {
         self.current = None;
+        self.detail_texture = None;
+        self.detail_receiver = None;
         self.loaded_photo_id = None;
         self.preview_texture = None;
         self.full_texture = None;
@@ -232,10 +273,19 @@ impl ViewerState {
                 .map(|texture| (direction, texture))
         });
         let previous_zoom = self.zoom;
+        let previous_pan = self.pan;
+        let previous_size = self.source_size();
         let previous_quarter_turns = self.quarter_turns;
         self.failed_full_loads.remove(&photo.id);
         self.current = Some(photo);
         self.zoom = 1.0;
+        self.pan = Vec2::ZERO;
+        self.last_fit_scale = None;
+        self.detail_texture = None;
+        self.detail_receiver = None;
+        self.detail_source_size = None;
+        self.detail_requested = false;
+        self.detail_failed = false;
         self.quarter_turns = 0;
         self.loaded_photo_id = None;
         self.preview_texture = None;
@@ -247,6 +297,8 @@ impl ViewerState {
             elapsed: 0.0,
             previous_texture,
             previous_zoom,
+            previous_pan,
+            previous_size,
             previous_quarter_turns,
         });
     }
@@ -292,15 +344,18 @@ impl ViewerState {
             return;
         };
 
+        self.poll_detail(ctx);
         self.poll_loaded(ctx);
         self.ensure_loading(ctx, &photo);
         let filmstrip_photos = viewer_filmstrip_photos(photos, photo.id, VIEWER_FILMSTRIP_RADIUS);
 
+        self.wheel_navigation_allowed = ctx.input(|input| input.modifiers.ctrl);
         egui::TopBottomPanel::top("viewer_filmstrip")
             .exact_height(VIEWER_FILMSTRIP_HEIGHT)
             .frame(egui::Frame::default().fill(VIEWER_BG))
             .show(ctx, |ui| {
                 apply_viewer_visuals(ui);
+                self.wheel_navigation_allowed |= ui.rect_contains_pointer(ui.max_rect());
                 self.show_filmstrip(ui, ui.max_rect(), thumbnails, &filmstrip_photos, photo.id);
             });
 
@@ -325,7 +380,7 @@ impl ViewerState {
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.allocate_ui_with_layout(
-                            Vec2::new(191.0, 24.0),
+                            Vec2::new(340.0, 24.0),
                             Layout::left_to_right(Align::Center),
                             |ui| self.show_zoom_controls(ui),
                         );
@@ -475,14 +530,120 @@ impl ViewerState {
         }
     }
 
+    pub fn wheel_navigation_allowed(&self) -> bool {
+        self.wheel_navigation_allowed
+    }
+
+    fn source_size(&self) -> Vec2 {
+        if let Some(size) = self.detail_source_size {
+            return size;
+        }
+        if let Some(photo) = &self.current {
+            if let (Some(w), Some(h)) = (photo.width, photo.height) {
+                if w > 0 && h > 0 {
+                    return Vec2::new(w as f32, h as f32);
+                }
+            }
+        }
+        self.visible_texture()
+            .map_or(Vec2::splat(1.0), |t| t.size_vec2())
+    }
+
+    fn displayed_source_size(&self, pixels_per_point: f32) -> Vec2 {
+        rotated_size(self.source_size(), self.quarter_turns) / pixels_per_point
+    }
+
+    fn fit_scale(&self, ctx: &egui::Context) -> f32 {
+        self.canvas.map_or(1.0, |rect| {
+            viewer_fit_scale(rect, self.displayed_source_size(ctx.pixels_per_point()))
+        })
+    }
+
+    fn set_zoom(&mut self, zoom: f32, anchor: egui::Pos2, ctx: &egui::Context) {
+        let zoom = zoom.clamp(1.0, VIEWER_MAX_ZOOM / self.fit_scale(ctx));
+        if let Some(canvas) = self.canvas {
+            self.pan = zoom_pan(self.pan, anchor - canvas.center(), self.zoom, zoom);
+        }
+        self.zoom = zoom;
+    }
+
     fn show_zoom_controls(&mut self, ui: &mut egui::Ui) {
-        if ui.add(viewer_button("- Zoom")).clicked() {
-            self.zoom = adjusted_zoom(self.zoom, -VIEWER_ZOOM_STEP);
+        let fit = self.fit_scale(ui.ctx());
+        let center = self.canvas.map_or(egui::Pos2::ZERO, |r| r.center());
+        if ui
+            .add(viewer_button("Ajuster"))
+            .on_hover_text("Afficher la photo entière")
+            .clicked()
+        {
+            self.zoom = 1.0;
+            self.pan = Vec2::ZERO;
         }
-        ui.label(format!("{:.0}%", self.zoom * 100.0));
-        if ui.add(viewer_button("+ Zoom")).clicked() {
-            self.zoom = adjusted_zoom(self.zoom, VIEWER_ZOOM_STEP);
+        if ui
+            .add(viewer_button("100 %"))
+            .on_hover_text("Taille réelle : un pixel de la photo par pixel de l'écran")
+            .clicked()
+        {
+            self.set_zoom(1.0 / fit, center, ui.ctx());
         }
+        let mut scale = self.zoom * fit;
+        ui.spacing_mut().slider_width = 115.0;
+        if ui
+            .add(
+                egui::Slider::new(&mut scale, fit..=VIEWER_MAX_ZOOM)
+                    .logarithmic(true)
+                    .show_value(false),
+            )
+            .on_hover_text("Zoom")
+            .changed()
+        {
+            self.set_zoom(scale / fit, center, ui.ctx());
+        }
+        ui.label(format!("{:.0} %", self.zoom * fit * 100.0));
+    }
+
+    fn poll_detail(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = &self.detail_receiver else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(image) => {
+                self.detail_failed = image.is_none();
+                self.detail_texture = image.map(|detail| {
+                    self.detail_source_size = Some(detail.source_size);
+                    ctx.load_texture(
+                        "viewer-original-detail",
+                        detail.image,
+                        TextureOptions::LINEAR,
+                    )
+                });
+                self.detail_receiver = None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.detail_receiver = None;
+                self.detail_failed = true;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn ensure_detail(&mut self, ctx: &egui::Context) {
+        if self.zoom <= 1.0 || self.detail_requested {
+            return;
+        }
+        let Some(photo) = &self.current else {
+            return;
+        };
+        self.detail_requested = true;
+        let path = photo.path.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.detail_receiver = Some(receiver);
+        let ctx = ctx.clone();
+        let max_side = ctx.input(|i| i.max_texture_side) as u32;
+        thread::spawn(move || {
+            let image = load_viewer_detail(&path, max_side);
+            let _ = sender.send(image);
+            ctx.request_repaint();
+        });
     }
 
     fn show_metadata(&self, ui: &mut egui::Ui, rect: egui::Rect, photo: &Photo) {
@@ -706,37 +867,184 @@ impl ViewerState {
     }
 
     fn visible_texture(&self) -> Option<&TextureHandle> {
-        self.full_texture.as_ref().or(self.preview_texture.as_ref())
+        self.detail_texture
+            .as_ref()
+            .or(self.full_texture.as_ref())
+            .or(self.preview_texture.as_ref())
     }
 
     fn show_image(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        ui.allocate_rect(rect, egui::Sense::drag());
+        self.canvas = Some(rect);
+        let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+        let size = self.displayed_source_size(ui.ctx().pixels_per_point());
+        let fit = viewer_fit_scale(rect, size);
+        if self.zoom > 1.0
+            && let Some(previous_fit) = self.last_fit_scale
+        {
+            self.zoom = (self.zoom * previous_fit / fit).clamp(1.0, VIEWER_MAX_ZOOM / fit);
+        }
+        self.last_fit_scale = Some(fit);
+        let navigator = zoom_navigator_rect(rect, size, self.zoom);
+        let over_navigator = ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| navigator.is_some_and(|r| r.contains(p)));
+        if response.hovered() && !over_navigator && !ui.input(|i| i.modifiers.ctrl) {
+            let delta = ui.input(|i| i.smooth_scroll_delta.y);
+            if delta != 0.0 {
+                let anchor = response.hover_pos().unwrap_or(rect.center());
+                self.set_zoom(
+                    self.zoom * (delta * VIEWER_WHEEL_ZOOM_SENSITIVITY).exp(),
+                    anchor,
+                    ui.ctx(),
+                );
+            }
+        }
+        if !ui.ctx().wants_keyboard_input() {
+            let factor = ui.input(|i| {
+                if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
+                    1.2
+                } else if i.key_pressed(egui::Key::Minus) {
+                    1.0 / 1.2
+                } else {
+                    1.0
+                }
+            });
+            if factor != 1.0 {
+                self.set_zoom(self.zoom * factor, rect.center(), ui.ctx());
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Num1)) {
+                let zoom = if (self.zoom * fit - 1.0).abs() < 0.01 {
+                    1.0
+                } else {
+                    1.0 / fit
+                };
+                self.set_zoom(zoom, rect.center(), ui.ctx());
+            }
+        }
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && !over_navigator
+            && self.zoom <= 1.001
+        {
+            let anchor = ui
+                .input(|i| i.pointer.press_origin())
+                .unwrap_or(rect.center());
+            self.set_zoom(1.0 / self.fit_scale(ui.ctx()), anchor, ui.ctx());
+        }
+        if response.dragged_by(egui::PointerButton::Primary) && !over_navigator {
+            self.pan += response.drag_delta();
+        }
+        let image_size = viewer_image_rect(rect, size, self.zoom).size();
+        self.pan = clamped_pan(self.pan, image_size, rect.size());
+        if self.zoom > 1.0 {
+            response.on_hover_cursor(if ui.input(|i| i.pointer.primary_down()) {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
+        self.ensure_detail(ui.ctx());
         ui.painter().rect_filled(rect, 0.0, VIEWER_CANVAS_BG);
 
         let transition = self.active_transition(ui);
-
-        if let Some((direction, progress, previous_texture, previous_zoom, previous_quarter_turns)) = transition
+        if let Some((
+            direction,
+            progress,
+            previous_texture,
+            previous_zoom,
+            previous_quarter_turns,
+            previous_pan,
+            previous_size,
+        )) = transition
         {
-            let distance = rect.width().max(1.0);
             let (previous_offset, current_offset) =
-                viewer_transition_offsets(direction, progress, distance);
+                viewer_transition_offsets(direction, progress, rect.width().max(1.0));
             paint_viewer_texture(
-                ui, rect, &previous_texture, previous_zoom, previous_offset, previous_quarter_turns,
+                ui,
+                rect,
+                &previous_texture,
+                previous_zoom,
+                previous_pan + Vec2::new(previous_offset, 0.0),
+                previous_quarter_turns,
+                previous_size / ui.ctx().pixels_per_point(),
             );
             if let Some(texture) = self.visible_texture() {
-                paint_viewer_texture(ui, rect, texture, self.zoom, current_offset, self.quarter_turns);
+                paint_viewer_texture(
+                    ui,
+                    rect,
+                    texture,
+                    self.zoom,
+                    self.pan + Vec2::new(current_offset, 0.0),
+                    self.quarter_turns,
+                    self.source_size() / ui.ctx().pixels_per_point(),
+                );
             }
         } else {
             self.show_static_image_or_placeholder(ui, rect);
+            self.show_zoom_navigator(ui, rect, size);
         }
-
         self.show_canvas_navigation_arrows(ui, rect);
+        if self.detail_receiver.is_some() || self.detail_failed {
+            ui.painter().text(
+                rect.left_top() + Vec2::splat(8.0),
+                egui::Align2::LEFT_TOP,
+                if self.detail_failed {
+                    "Détail original indisponible"
+                } else {
+                    "Chargement des détails…"
+                },
+                egui::TextStyle::Small.resolve(ui.style()),
+                Color32::WHITE,
+            );
+        }
+    }
+
+    fn show_zoom_navigator(&mut self, ui: &mut egui::Ui, canvas: egui::Rect, size: Vec2) {
+        let Some(rect) = zoom_navigator_rect(canvas, size, self.zoom) else {
+            return;
+        };
+        let response = ui.interact(
+            rect,
+            ui.id().with("zoom_navigator"),
+            egui::Sense::click_and_drag(),
+        );
+        if (response.is_pointer_button_down_on() || response.clicked())
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            let image_size = viewer_image_rect(canvas, size, self.zoom).size();
+            self.pan = clamped_pan(
+                -(pointer - rect.center()) * image_size / rect.size(),
+                image_size,
+                canvas.size(),
+            );
+        }
+        if let Some(texture) = self.visible_texture() {
+            paint_viewer_texture(
+                ui,
+                rect.expand(VIEWER_IMAGE_MARGIN + VIEWER_MATTE_PADDING),
+                texture,
+                1.0,
+                Vec2::ZERO,
+                self.quarter_turns,
+                self.source_size(),
+            );
+        }
+        let image = viewer_image_rect(canvas, size, self.zoom).translate(self.pan);
+        let visible = image.intersect(canvas);
+        let min = rect.min + (visible.min - image.min) / image.size() * rect.size();
+        let max = rect.min + (visible.max - image.min) / image.size() * rect.size();
+        ui.painter().rect_stroke(
+            egui::Rect::from_min_max(min, max),
+            0.0,
+            Stroke::new(2.0_f32, Color32::WHITE),
+            egui::StrokeKind::Inside,
+        );
+        response.on_hover_cursor(egui::CursorIcon::Crosshair);
     }
 
     fn active_transition(
         &mut self,
         ui: &egui::Ui,
-    ) -> Option<(NavigationDirection, f32, TextureHandle, f32, u8)> {
+    ) -> Option<(NavigationDirection, f32, TextureHandle, f32, u8, Vec2, Vec2)> {
         let Some(transition) = &mut self.transition else {
             return None;
         };
@@ -752,6 +1060,8 @@ impl ViewerState {
             transition.previous_texture.clone(),
             transition.previous_zoom,
             transition.previous_quarter_turns,
+            transition.previous_pan,
+            transition.previous_size,
         ));
         if progress >= 1.0 {
             self.transition = None;
@@ -761,7 +1071,15 @@ impl ViewerState {
 
     fn show_static_image_or_placeholder(&self, ui: &egui::Ui, rect: egui::Rect) {
         if let Some(texture) = self.visible_texture() {
-            paint_viewer_texture(ui, rect, texture, self.zoom, 0.0, self.quarter_turns);
+            paint_viewer_texture(
+                ui,
+                rect,
+                texture,
+                self.zoom,
+                self.pan,
+                self.quarter_turns,
+                self.source_size() / ui.ctx().pixels_per_point(),
+            );
         } else {
             let label = if self.loading {
                 "Chargement de l'image"
@@ -802,10 +1120,6 @@ impl ViewerState {
     }
 }
 
-pub fn adjusted_zoom(current: f32, delta: f32) -> f32 {
-    (current + delta).clamp(VIEWER_MIN_ZOOM, VIEWER_MAX_ZOOM)
-}
-
 pub fn viewer_canvas_size(available: Vec2) -> Vec2 {
     let height = (available.y - VIEWER_METADATA_HEIGHT)
         .max(VIEWER_MIN_CANVAS_HEIGHT)
@@ -827,6 +1141,39 @@ pub fn viewer_metadata_rect(panel_rect: egui::Rect) -> egui::Rect {
     )
 }
 
+fn rotated_size(size: Vec2, quarter_turns: u8) -> Vec2 {
+    if quarter_turns % 2 == 0 {
+        size
+    } else {
+        Vec2::new(size.y, size.x)
+    }
+}
+
+fn viewer_fit_scale(canvas: egui::Rect, size: Vec2) -> f32 {
+    viewer_image_rect(canvas, size, 1.0).width() / size.x.max(f32::EPSILON)
+}
+
+fn zoom_pan(pan: Vec2, anchor: Vec2, old_zoom: f32, new_zoom: f32) -> Vec2 {
+    anchor - (anchor - pan) * (new_zoom / old_zoom)
+}
+
+fn clamped_pan(pan: Vec2, image_size: Vec2, canvas_size: Vec2) -> Vec2 {
+    let limit = ((image_size - canvas_size) * 0.5).max(Vec2::ZERO);
+    pan.clamp(-limit, limit)
+}
+
+fn zoom_navigator_rect(canvas: egui::Rect, size: Vec2, zoom: f32) -> Option<egui::Rect> {
+    let image_size = viewer_image_rect(canvas, size, zoom).size();
+    if image_size.x <= canvas.width() && image_size.y <= canvas.height() {
+        return None;
+    }
+    let area = egui::Rect::from_min_max(
+        canvas.right_bottom() - Vec2::new(172.0, 132.0),
+        canvas.right_bottom() - Vec2::splat(12.0),
+    );
+    Some(viewer_fit_rect(area, size))
+}
+
 pub fn viewer_image_rect(canvas_rect: egui::Rect, image_size: Vec2, zoom: f32) -> egui::Rect {
     if image_size.x <= 0.0 || image_size.y <= 0.0 {
         return egui::Rect::from_center_size(canvas_rect.center(), Vec2::ZERO);
@@ -837,7 +1184,9 @@ pub fn viewer_image_rect(canvas_rect: egui::Rect, image_size: Vec2, zoom: f32) -
         (canvas_rect.width() - reserved_margin).max(1.0),
         (canvas_rect.height() - reserved_margin).max(1.0),
     );
-    let fit_scale = (fit_size.x / image_size.x).min(fit_size.y / image_size.y);
+    let fit_scale = (fit_size.x / image_size.x)
+        .min(fit_size.y / image_size.y)
+        .min(1.0);
     let fitted_size = image_size * fit_scale * zoom;
 
     egui::Rect::from_center_size(canvas_rect.center(), fitted_size)
@@ -848,21 +1197,22 @@ fn paint_viewer_texture(
     canvas_rect: egui::Rect,
     texture: &TextureHandle,
     zoom: f32,
-    offset_x: f32,
+    offset: Vec2,
     quarter_turns: u8,
+    size: Vec2,
 ) {
-    let size = texture.size_vec2();
     let image_size = if quarter_turns % 2 == 0 {
         size
     } else {
         Vec2::new(size.y, size.x)
     };
-    let image_rect =
-        viewer_image_rect(canvas_rect, image_size, zoom).translate(Vec2::new(offset_x, 0.0));
+    let image_rect = viewer_image_rect(canvas_rect, image_size, zoom).translate(offset);
+    let painter = ui
+        .painter()
+        .with_clip_rect(canvas_rect.intersect(ui.clip_rect()));
     let matte_rect = image_rect.expand(VIEWER_MATTE_PADDING);
-    ui.painter()
-        .rect_filled(matte_rect, 0.0, Color32::from_rgb(224, 224, 220));
-    ui.painter().rect_stroke(
+    painter.rect_filled(matte_rect, 0.0, Color32::from_rgb(224, 224, 220));
+    painter.rect_stroke(
         matte_rect,
         0.0,
         egui::Stroke::new(1.0, Color32::from_rgb(118, 118, 118)),
@@ -889,7 +1239,7 @@ fn paint_viewer_texture(
         });
     }
     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-    ui.painter().add(mesh);
+    painter.add(mesh);
 }
 
 pub fn viewer_transition_progress(elapsed_seconds: f32) -> f32 {
@@ -1204,6 +1554,145 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zoom_preserves_point_under_pointer() {
+        let pan = Vec2::new(20.0, -30.0);
+        let anchor = Vec2::new(100.0, 80.0);
+        let new_pan = zoom_pan(pan, anchor, 1.5, 3.0);
+        assert!(((anchor - pan) / 1.5 - (anchor - new_pan) / 3.0).length() < 0.001);
+    }
+
+    #[test]
+    fn resizing_a_zoomed_photo_preserves_actual_scale() {
+        let ctx = egui::Context::default();
+        let mut viewer = ViewerState::default();
+        let mut photo = photo_for_test(1);
+        photo.width = Some(3200);
+        photo.height = Some(2400);
+        viewer.open(photo);
+        viewer.detail_requested = true;
+        let large = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1280.0, 700.0));
+        viewer.canvas = Some(large);
+        viewer.last_fit_scale = Some(viewer.fit_scale(&ctx));
+        viewer.set_zoom(1.0 / viewer.fit_scale(&ctx), large.center(), &ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                viewer.show_image(ui, egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(900.0, 480.0)));
+            });
+        });
+        assert!((viewer.zoom * viewer.fit_scale(&ctx) - 1.0).abs() < 0.001);
+        viewer.set_zoom(10000.0, large.center(), &ctx);
+        assert!((viewer.zoom * viewer.fit_scale(&ctx) - VIEWER_MAX_ZOOM).abs() < 0.001);
+        viewer.set_zoom(0.0, large.center(), &ctx);
+        assert_eq!(viewer.zoom, 1.0);
+    }
+
+    #[test]
+    fn actual_size_is_one_source_pixel_per_screen_pixel_including_hidpi_and_rotation() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1000.0, 700.0));
+        for pixels_per_point in [1.0, 2.0] {
+            for rotation in 0..4 {
+                let native = rotated_size(Vec2::new(4000.0, 3000.0), rotation);
+                let logical = native / pixels_per_point;
+                let actual =
+                    viewer_image_rect(canvas, logical, 1.0 / viewer_fit_scale(canvas, logical));
+                assert!((actual.size() * pixels_per_point - native).length() < 0.01);
+            }
+        }
+        assert_eq!(
+            viewer_image_rect(canvas, Vec2::new(120.0, 80.0), 1.0).size(),
+            Vec2::new(120.0, 80.0)
+        );
+    }
+
+    #[test]
+    fn panning_stops_at_edges_and_centers_axes_that_fit() {
+        assert_eq!(
+            clamped_pan(
+                Vec2::new(900.0, -900.0),
+                Vec2::new(2000.0, 500.0),
+                Vec2::new(1000.0, 700.0)
+            ),
+            Vec2::new(500.0, 0.0)
+        );
+        assert_eq!(
+            clamped_pan(
+                Vec2::new(30.0, -40.0),
+                Vec2::new(500.0, 400.0),
+                Vec2::new(1000.0, 700.0)
+            ),
+            Vec2::ZERO
+        );
+    }
+
+    #[test]
+    fn navigator_appears_only_when_photo_overflows() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1000.0, 700.0));
+        let size = Vec2::new(4000.0, 3000.0);
+        assert!(zoom_navigator_rect(canvas, size, 1.0).is_none());
+        let nav = zoom_navigator_rect(canvas, size, 3.0).unwrap();
+        assert!(canvas.contains_rect(nav));
+        assert!((nav.aspect_ratio() - size.x / size.y).abs() < 0.001);
+    }
+
+    #[test]
+    fn zoom_loads_original_detail_and_keeps_native_dimensions_if_gpu_limits_texture() {
+        let path =
+            std::env::temp_dir().join(format!("mycasa-zoom-detail-{}.png", std::process::id()));
+        image::RgbaImage::from_pixel(2000, 4, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        let detail = load_viewer_detail(&path, 4096).unwrap();
+        assert_eq!(detail.image.size, [2000, 4]);
+        let limited = load_viewer_detail(&path, 1000).unwrap();
+        assert_eq!(limited.image.size, [1000, 2]);
+        assert_eq!(limited.source_size, Vec2::new(2000.0, 4.0));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn canvas_wheel_zooms_without_requesting_photo_navigation_and_new_photo_resets_view() {
+        let ctx = egui::Context::default();
+        let mut viewer = ViewerState::default();
+        let mut photo = photo_for_test(1);
+        photo.width = Some(4000);
+        photo.height = Some(3000);
+        viewer.open(photo);
+        viewer.detail_requested = true;
+        let mut thumbnails = ThumbnailCache::new();
+        viewer.remember_preloaded_image(1, color_image_for_test(50));
+        for frame in 0..3 {
+            let mut events = vec![egui::Event::PointerMoved(egui::pos2(600.0, 350.0))];
+            if frame == 1 {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, 120.0),
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1280.0, 820.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| viewer.show_docked(ctx, &[], &mut thumbnails),
+            );
+        }
+        assert!(viewer.zoom > 1.0);
+        assert!(!viewer.wheel_navigation_allowed());
+        assert!(viewer.take_navigation_request().is_none());
+        viewer.pan = Vec2::splat(90.0);
+        viewer.open(photo_for_test(2));
+        assert_eq!(viewer.zoom, 1.0);
+        assert_eq!(viewer.pan, Vec2::ZERO);
+        assert!(!viewer.detail_requested);
+        assert!(viewer.detail_receiver.is_none());
+    }
+
+    #[test]
     fn viewer_shows_navigation_above_and_zoom_below_photo() {
         let ctx = egui::Context::default();
         let mut viewer = ViewerState::default();
@@ -1240,9 +1729,9 @@ mod tests {
             } else { None }
         }).unwrap();
         assert!(text_y("Photothèque") < 68.0);
-        assert!(text_y("- Zoom") > 760.0);
-        assert!(labels.contains(&"- Zoom"), "{labels:?}");
-        assert!(labels.contains(&"+ Zoom"), "{labels:?}");
+        assert!(text_y("Ajuster") > 760.0);
+        assert!(labels.contains(&"Ajuster"), "{labels:?}");
+        assert!(labels.contains(&"100 %"), "{labels:?}");
         assert!(
             !labels
                 .iter()
@@ -1276,13 +1765,6 @@ mod tests {
             ))
         );
         assert_eq!(viewer.take_navigation_request(), None);
-    }
-
-    #[test]
-    fn adjusted_zoom_is_bounded() {
-        assert_eq!(adjusted_zoom(1.0, 0.1), 1.1);
-        assert_eq!(adjusted_zoom(0.2, -0.1), VIEWER_MIN_ZOOM);
-        assert_eq!(adjusted_zoom(4.0, 0.1), VIEWER_MAX_ZOOM);
     }
 
     #[test]

@@ -1090,8 +1090,12 @@ impl MyCasaApp {
             } else if input.key_pressed(egui::Key::ArrowRight) {
                 Some(NavigationDirection::Next)
             } else {
-                let wheel_delta =
-                    effective_wheel_delta(input.raw_scroll_delta.y, input.smooth_scroll_delta.y);
+                let wheel_delta = if self.viewer.wheel_navigation_allowed() {
+                    effective_wheel_delta(input.raw_scroll_delta.y, input.smooth_scroll_delta.y)
+                } else {
+                    self.viewer_wheel_navigation.reset();
+                    0.0
+                };
                 self.viewer_wheel_navigation
                     .tick(wheel_delta, input.stable_dt.clamp(1.0 / 240.0, 0.1))
             }
