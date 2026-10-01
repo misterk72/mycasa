@@ -65,19 +65,23 @@ Windows archives include the executable and the native DLLs collected from the C
 
 ## Publish A Release
 
-The GitHub Actions workflow builds Linux and Windows release archives on every push. It creates a downloadable GitHub Release only when a version tag is pushed.
+`main` is the default development branch. The GitHub Actions workflow builds Linux and Windows release archives on every push to `main`, on pull requests, and on version tags (`v*` or a leading digit). It creates a downloadable GitHub Release only when a version tag is pushed.
+
+Create each new release tag from the up-to-date `main` branch (using an unused version number):
 
 ```bash
-git tag 1.1.0
-git push origin 1.1.0
+git switch main
+git pull --ff-only origin main
+git tag 1.2.1
+git push origin 1.2.1
 ```
 
-After the workflow finishes, GitHub will create `MyCasa 1.1.0` and attach:
+After the workflow finishes, GitHub will create `MyCasa 1.2.1` and attach:
 
 - `mycasa-linux-x86_64.tar.gz`
 - `mycasa-windows-x86_64.zip`
 
-For a replacement build of the same version, delete the GitHub Release and tag first, then push a corrected tag. Prefer creating a new patch tag such as `1.1.1` once a release has been shared.
+For a replacement build of the same version, delete the GitHub Release and tag first, then push a corrected tag. Prefer creating a new patch tag such as `1.2.2` once a release has been shared.
 
 ## Build And Run
 
